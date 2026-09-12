@@ -1,24 +1,47 @@
 import * as vscode from 'vscode';
-import type { Api, ResultSet } from '@oracle/sql-developer-api';
+import type {
+  Api,
+  ResultSet,
+  Worksheet
+} from '@oracle/sql-developer-api';
 
 const ORACLE_EXTENSION_ID = 'Oracle.sql-developer';
 const COMMAND_ID = 'oracleCleanResults.runQuery';
-const RESULTS_VIEW_ID = 'oracleCleanResults.resultsView';
-const RESULTS_CONTAINER_ID = 'oracleCleanResultsContainer';
+
+const RESULTS_VIEW_ID =
+  'oracleCleanResults.resultsView';
+
+const RESULTS_CONTAINER_ID =
+  'oracleCleanResultsContainer';
+
 const PAGE_SIZE = 500;
 
-let resultsView: vscode.WebviewView | undefined;
-let pendingHtml: string | undefined;
+let resultsView:
+  vscode.WebviewView | undefined;
 
-class ResultsViewProvider implements vscode.WebviewViewProvider {
-  public static readonly viewType = RESULTS_VIEW_ID;
+let pendingHtml:
+  string | undefined;
+
+
+/*
+ * Bottom results panel
+ */
+class ResultsViewProvider
+  implements vscode.WebviewViewProvider {
+
+  public static readonly viewType =
+    RESULTS_VIEW_ID;
 
   resolveWebviewView(
     webviewView: vscode.WebviewView,
-    _context: vscode.WebviewViewResolveContext,
-    _token: vscode.CancellationToken
+    _context:
+      vscode.WebviewViewResolveContext,
+    _token:
+      vscode.CancellationToken
   ): void {
-    resultsView = webviewView;
+
+    resultsView =
+      webviewView;
 
     webviewView.webview.options = {
       enableScripts: false
@@ -29,148 +52,279 @@ class ResultsViewProvider implements vscode.WebviewViewProvider {
       buildWelcomeHtml();
 
     webviewView.onDidDispose(() => {
-      if (resultsView === webviewView) {
-        resultsView = undefined;
+
+      if (
+        resultsView ===
+        webviewView
+      ) {
+        resultsView =
+          undefined;
       }
+
     });
   }
 }
 
-export function activate(context: vscode.ExtensionContext): void {
-  const provider = new ResultsViewProvider();
+
+/*
+ * Extension activation
+ */
+export async function activate(
+  context: vscode.ExtensionContext
+): Promise<void> {
+
+  /*
+   * Register our bottom results view.
+   */
+  const provider =
+    new ResultsViewProvider();
 
   context.subscriptions.push(
-    vscode.window.registerWebviewViewProvider(
-      ResultsViewProvider.viewType,
-      provider
-    )
+    vscode.window
+      .registerWebviewViewProvider(
+        ResultsViewProvider.viewType,
+        provider
+      )
   );
 
-  const disposable = vscode.commands.registerCommand(
-    COMMAND_ID,
-    async () => {
-      try {
-        await runQueryWithCleanResults();
-      } catch (error) {
-        const message =
-          error instanceof Error
-            ? error.message
-            : String(error);
 
-        void vscode.window.showErrorMessage(
-          `Oracle Clean Results: ${message}`
-        );
-      }
-    }
-  );
-
-  context.subscriptions.push(disposable);
-}
-
-export function deactivate(): void {
-  // Result sets are closed immediately after reading.
-}
-
-async function runQueryWithCleanResults(): Promise<void> {
+  /*
+   * Get Oracle SQL Developer's API.
+   */
   const oracleExtension =
-    vscode.extensions.getExtension<Api>(
-      ORACLE_EXTENSION_ID
-    );
+    vscode.extensions
+      .getExtension<Api>(
+        ORACLE_EXTENSION_ID
+      );
 
   if (!oracleExtension) {
-    throw new Error(
-      'Oracle SQL Developer for VS Code is not installed or is disabled.'
-    );
+
+    void vscode.window
+      .showErrorMessage(
+        'Oracle Clean Results: ' +
+        'Oracle SQL Developer for VS Code ' +
+        'is not installed or is disabled.'
+      );
+
+    return;
   }
 
-  const api = oracleExtension.isActive
-    ? oracleExtension.exports
-    : await oracleExtension.activate();
 
-  const worksheet =
-    api.worksheets().activeWorksheet;
+  const api =
+    oracleExtension.isActive
+      ? oracleExtension.exports
+      : await oracleExtension.activate();
 
-  if (!worksheet) {
-    throw new Error(
-      'Open an Oracle SQL worksheet first.'
-    );
-  }
 
-  const editor = worksheet.editor;
-  const selection = editor.selection;
+  /*
+   * Register our command through Oracle's
+   * worksheet API.
+   *
+   * This gives the callback the actual
+   * Oracle worksheet that invoked it.
+   */
+  const commandDisposable =
+    api.worksheets()
+      .registerCommand(
+        COMMAND_ID,
+        (worksheet: Worksheet) => {
 
-  const selectedSql = selection.isEmpty
-    ? ''
-    : editor.document.getText(selection);
+          void runQueryWithCleanResults(
+            worksheet
+          ).catch(error => {
 
-  const sql =
-    selectedSql.trim() ||
-    editor.document.getText().trim();
+            const message =
+              error instanceof Error
+                ? error.message
+                : String(error);
 
-  if (!sql) {
-    throw new Error(
-      'There is no SQL to execute.'
-    );
-  }
+            void vscode.window
+              .showErrorMessage(
+                `Oracle Clean Results: ${message}`
+              );
 
-  const session = worksheet.session;
+          });
+
+        }
+      );
+
+  context.subscriptions.push(
+    commandDisposable
+  );
+}
+
+
+export function deactivate(): void {
+  /*
+   * Result sets are closed immediately
+   * after reading.
+   */
+}
+
+
+/*
+ * Execute the query.
+ */
+async function runQueryWithCleanResults(
+  worksheet: Worksheet
+): Promise<void> {
+
+  const editor =
+    worksheet.editor;
+
+  const session =
+    worksheet.session;
 
   if (!session) {
     throw new Error(
-      'The active Oracle worksheet is not connected to a database.'
+      'The active Oracle worksheet ' +
+      'is not connected to a database.'
     );
   }
 
-  let resultSet: ResultSet | undefined;
+
+  /*
+   * Rule 1:
+   *
+   * If SQL is selected, execute exactly
+   * what the user selected.
+   */
+  const selection =
+    editor.selection;
+
+  let sql: string;
+
+  if (!selection.isEmpty) {
+
+    sql =
+      editor.document
+        .getText(selection)
+        .trim();
+
+  } else {
+
+    /*
+     * Rule 2:
+     *
+     * Nothing selected.
+     *
+     * Ask Oracle SQL Developer itself
+     * which SQL statement contains the
+     * current cursor position.
+     */
+    const documentSql =
+      editor.document.getText();
+
+    const cursor =
+      editor.selection.active;
+
+    const prepared =
+      await session.prepareSql(
+        documentSql,
+        {
+          line:
+            cursor.line,
+
+          character:
+            cursor.character
+        }
+      );
+
+    sql =
+      prepared.statementText
+        ?.trim() ??
+      '';
+
+  }
+
+
+  if (!sql) {
+    throw new Error(
+      'No SQL statement was found ' +
+      'at the current cursor position.'
+    );
+  }
+
+
+  let resultSet:
+    ResultSet | undefined;
 
   try {
-    resultSet = await session.executeQuery(
-      { sql },
-      { pageSize: PAGE_SIZE }
+
+    /*
+     * Execute through the connection already
+     * attached to the Oracle worksheet.
+     */
+    resultSet =
+      await session.executeQuery(
+        { sql },
+        {
+          pageSize:
+            PAGE_SIZE
+        }
+      );
+
+
+    const rows =
+      resultSet.rows();
+
+
+    await showResults(
+      rows
     );
 
-    const rows = resultSet.rows();
-
-    await showResults(sql, rows);
   } finally {
+
     if (resultSet) {
       await resultSet.close();
     }
+
   }
 }
 
+
+/*
+ * Show the bottom Oracle Results panel.
+ */
 async function showResults(
-  sql: string,
   rows: Array<Record<string, unknown>>
 ): Promise<void> {
-  pendingHtml = buildResultsHtml(
-    sql,
-    rows
-  );
+
+  pendingHtml =
+    buildResultsHtml(rows);
+
 
   /*
-   * Reveal our custom bottom panel.
-   *
-   * The command name is generated by VS Code from
-   * the contributed View Container ID.
+   * Reveal our VS Code bottom panel.
    */
-  await vscode.commands.executeCommand(
-    `workbench.view.extension.${RESULTS_CONTAINER_ID}`
-  );
+  await vscode.commands
+    .executeCommand(
+      `workbench.view.extension.${RESULTS_CONTAINER_ID}`
+    );
+
 
   if (resultsView) {
+
     resultsView.webview.html =
       pendingHtml;
 
     resultsView.show?.(true);
+
   }
 }
 
+
+/*
+ * Initial message before anything has run.
+ */
 function buildWelcomeHtml(): string {
+
   return `
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
+
 <meta charset="UTF-8">
 
 <style>
@@ -198,6 +352,7 @@ function buildWelcomeHtml(): string {
   }
 
 </style>
+
 </head>
 
 <body>
@@ -205,23 +360,28 @@ function buildWelcomeHtml(): string {
   <div class="message">
     Run a query using
     <strong>
-      Oracle: Run Query with Clean Results
+      Run with Clean Results
     </strong>
     to display results here.
   </div>
 
 </body>
+
 </html>
 `;
 }
 
+
+/*
+ * Build the query results grid.
+ */
 function buildResultsHtml(
-  sql: string,
   rows: Array<Record<string, unknown>>
 ): string {
 
   const columns =
     getColumns(rows);
+
 
   const headerHtml =
     columns
@@ -231,8 +391,10 @@ function buildResultsHtml(
       )
       .join('');
 
+
   const bodyHtml =
     rows.length === 0
+
       ? `
         <tr>
           <td
@@ -246,6 +408,7 @@ function buildResultsHtml(
           </td>
         </tr>
       `
+
       : rows
           .map(row => {
 
@@ -274,6 +437,7 @@ function buildResultsHtml(
           })
           .join('');
 
+
   return `
 <!DOCTYPE html>
 <html lang="en">
@@ -289,7 +453,7 @@ function buildResultsHtml(
 >
 
 <title>
-  Oracle Clean Results
+  Oracle Results
 </title>
 
 <style>
@@ -316,10 +480,15 @@ function buildResultsHtml(
       var(--vscode-panel-background);
   }
 
+
   .toolbar {
     display: flex;
-    align-items: center;
-    gap: 12px;
+
+    align-items:
+      center;
+
+    gap:
+      14px;
 
     padding:
       6px 10px;
@@ -329,11 +498,14 @@ function buildResultsHtml(
       var(--vscode-panel-border);
 
     color:
-      var(--vscode-descriptionForeground);
+      var(
+        --vscode-descriptionForeground
+      );
 
     white-space:
       nowrap;
   }
+
 
   .grid-wrap {
     overflow:
@@ -346,6 +518,7 @@ function buildResultsHtml(
       calc(100vh - 34px);
   }
 
+
   table {
     border-collapse:
       collapse;
@@ -356,6 +529,7 @@ function buildResultsHtml(
     min-width:
       100%;
   }
+
 
   th,
   td {
@@ -380,6 +554,7 @@ function buildResultsHtml(
       top;
   }
 
+
   th {
     position:
       sticky;
@@ -399,16 +574,19 @@ function buildResultsHtml(
       );
   }
 
+
   tr:last-child td {
     border-bottom:
       0;
   }
+
 
   th:last-child,
   td:last-child {
     border-right:
       0;
   }
+
 
   .empty {
     padding:
@@ -418,7 +596,9 @@ function buildResultsHtml(
       center;
 
     color:
-      var(--vscode-descriptionForeground);
+      var(
+        --vscode-descriptionForeground
+      );
   }
 
 </style>
@@ -439,6 +619,7 @@ function buildResultsHtml(
     </span>
 
   </div>
+
 
   <div class="grid-wrap">
 
@@ -464,15 +645,20 @@ function buildResultsHtml(
 `;
 }
 
+
+/*
+ * Determine columns from the returned rows.
+ */
 function getColumns(
   rows: Array<Record<string, unknown>>
 ): string[] {
 
-  const columns: string[] =
-    [];
+  const columns:
+    string[] = [];
 
   const seen =
     new Set<string>();
+
 
   for (const row of rows) {
 
@@ -483,6 +669,7 @@ function getColumns(
       if (!seen.has(key)) {
 
         seen.add(key);
+
         columns.push(key);
 
       }
@@ -491,9 +678,16 @@ function getColumns(
 
   }
 
+
   return columns;
 }
 
+
+/*
+ * Format values for display.
+ *
+ * TRUE database NULL values become blank.
+ */
 function formatCell(
   value: unknown
 ): string {
@@ -505,13 +699,17 @@ function formatCell(
     return '';
   }
 
+
   if (
     value instanceof Date
   ) {
+
     return escapeHtml(
       value.toISOString()
     );
+
   }
+
 
   if (
     typeof value === 'object'
@@ -533,32 +731,42 @@ function formatCell(
 
   }
 
+
   return escapeHtml(
     String(value)
   );
 }
 
+
+/*
+ * Avoid values being interpreted as HTML.
+ */
 function escapeHtml(
   value: string
 ): string {
 
   return value
+
     .replaceAll(
       '&',
       '&amp;'
     )
+
     .replaceAll(
       '<',
       '&lt;'
     )
+
     .replaceAll(
       '>',
       '&gt;'
     )
+
     .replaceAll(
       '"',
       '&quot;'
     )
+
     .replaceAll(
       "'",
       '&#039;'
