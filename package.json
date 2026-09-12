@@ -1,0 +1,55 @@
+{
+  "name": "oracle-clean-results",
+  "displayName": "Oracle Clean Results",
+  "description": "A lightweight companion to Oracle SQL Developer for VS Code that renders query results with NULL values as blank cells.",
+  "version": "0.0.2",
+  "publisher": "local",
+  "engines": {
+    "vscode": ">=1.101.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "extensionDependencies": [
+    "Oracle.sql-developer"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "oracleCleanResults.runQuery",
+        "title": "Oracle: Run Query with Clean Results"
+      }
+    ],
+    "viewsContainers": {
+      "panel": [
+        {
+          "id": "oracleCleanResultsContainer",
+          "title": "Oracle Results",
+          "icon": "resources/database.svg"
+        }
+      ]
+    },
+    "views": {
+      "oracleCleanResultsContainer": [
+        {
+          "id": "oracleCleanResults.resultsView",
+          "name": "Results",
+          "type": "webview",
+          "icon": "resources/database.svg"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@oracle/sql-developer-api": "^25.2.0",
+    "@types/node": "^22.0.0",
+    "@types/vscode": "^1.101.0",
+    "typescript": "^5.7.3"
+  }
+}
