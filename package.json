@@ -2,7 +2,7 @@
   "name": "oracle-clean-results",
   "displayName": "Oracle Clean Results",
   "description": "A lightweight companion to Oracle SQL Developer for VS Code that renders query results with NULL values as blank cells.",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "publisher": "local",
   "engines": {
     "vscode": ">=1.101.0"
@@ -18,9 +18,20 @@
     "commands": [
       {
         "command": "oracleCleanResults.runQuery",
-        "title": "Oracle: Run Query with Clean Results"
+        "title": "Run with Clean Results",
+        "category": "Oracle Clean Results",
+        "icon": "$(play)"
       }
     ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "oracleCleanResults.runQuery",
+          "when": "sqldeveloper.activeEditorType == sqlWorksheet",
+          "group": "navigation@1"
+        }
+      ]
+    },
     "viewsContainers": {
       "panel": [
         {
