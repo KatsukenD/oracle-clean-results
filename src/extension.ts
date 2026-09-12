@@ -24,24 +24,72 @@ const PAGE_SIZE =
 
 
 /*
- * A single results tab.
+ * Oracle NLS settings used for displaying
+ * DATE and TIMESTAMP values.
  */
-interface ResultTab {
+interface NlsSettings {
 
-  id: number;
+  dateFormat:
+    string;
 
-  title: string;
-
-  rows:
-    Array<Record<string, unknown>>;
-
-  pinned: boolean;
+  timestampFormat:
+    string;
 
 }
 
 
 /*
- * Webview messages.
+ * Metadata returned by the Oracle
+ * SQL Developer ResultSet.
+ */
+interface ColumnMetadata {
+
+  name:
+    string;
+
+  dataType:
+    string;
+
+  precision?:
+    number;
+
+  scale?:
+    number;
+
+  isNullable?:
+    number;
+
+}
+
+
+/*
+ * A single results tab.
+ */
+interface ResultTab {
+
+  id:
+    number;
+
+  title:
+    string;
+
+  rows:
+    Array<Record<string, unknown>>;
+
+  metadata:
+    ColumnMetadata[];
+
+  pinned:
+    boolean;
+
+  nlsSettings:
+    NlsSettings;
+
+}
+
+
+/*
+ * Messages received from the results webview.
  */
 interface WebviewMessage {
 
@@ -50,7 +98,8 @@ interface WebviewMessage {
     | 'togglePin'
     | 'closeTab';
 
-  id: number;
+  id:
+    number;
 
 }
 
@@ -82,9 +131,12 @@ class ResultsViewProvider
 
 
   resolveWebviewView(
-    webviewView: vscode.WebviewView,
+    webviewView:
+      vscode.WebviewView,
+
     _context:
       vscode.WebviewViewResolveContext,
+
     _token:
       vscode.CancellationToken
   ): void {
@@ -93,10 +145,6 @@ class ResultsViewProvider
       webviewView;
 
 
-    /*
-     * JavaScript is now required because
-     * the result tabs are interactive.
-     */
     webviewView.webview.options = {
       enableScripts: true
     };
@@ -105,13 +153,11 @@ class ResultsViewProvider
     renderResultsView();
 
 
-    /*
-     * Receive tab actions from the webview.
-     */
     webviewView.webview
       .onDidReceiveMessage(
-        async (
-          message: WebviewMessage
+        (
+          message:
+            WebviewMessage
         ) => {
 
           switch (
@@ -180,9 +226,6 @@ export async function activate(
 ): Promise<void> {
 
 
-  /*
-   * Register bottom results view.
-   */
   const provider =
     new ResultsViewProvider();
 
@@ -198,9 +241,6 @@ export async function activate(
   );
 
 
-  /*
-   * Obtain Oracle SQL Developer API.
-   */
   const oracleExtension =
     vscode.extensions
       .getExtension<Api>(
@@ -228,10 +268,6 @@ export async function activate(
       : await oracleExtension.activate();
 
 
-  /*
-   * Register our worksheet command
-   * through Oracle's own API.
-   */
   const commandDisposable =
     api.worksheets()
       .registerCommand(
@@ -279,14 +315,17 @@ export function deactivate(): void {
 
   /*
    * Result sets are closed immediately
-   * after their rows are read.
+   * after their rows and metadata are read.
    */
 
 }
 
 
 /*
- * Execute selected SQL or SQL at cursor.
+ * Execute either:
+ *
+ * 1. selected SQL, or
+ * 2. the statement containing the cursor.
  */
 async function runQueryWithCleanResults(
   worksheet:
@@ -319,9 +358,6 @@ async function runQueryWithCleanResults(
     string;
 
 
-  /*
-   * Explicit selection wins.
-   */
   if (!selection.isEmpty) {
 
     sql =
@@ -333,10 +369,6 @@ async function runQueryWithCleanResults(
 
   } else {
 
-    /*
-     * Otherwise ask Oracle which
-     * statement contains the cursor.
-     */
     const documentSql =
       editor.document
         .getText();
@@ -381,6 +413,16 @@ async function runQueryWithCleanResults(
   }
 
 
+  /*
+   * Capture the current Oracle session
+   * DATE and TIMESTAMP display formats.
+   */
+  const nlsSettings =
+    await getNlsSettings(
+      session
+    );
+
+
   let resultSet:
     ResultSet | undefined;
 
@@ -402,17 +444,53 @@ async function runQueryWithCleanResults(
       );
 
 
-    const rows =
-      resultSet.rows();
+      const rows =
+        resultSet.rows();
 
 
-    /*
-     * Hand the completed result
-     * to the tab manager.
-     */
-    await addQueryResult(
-      rows
-    );
+      const metadata:
+        ColumnMetadata[] =
+          resultSet.metadata()
+            .map(
+              column => ({
+                name:
+                  String(
+                    column.name ??
+                    ''
+                  ),
+
+                dataType:
+                  String(
+                    column.dataType ??
+                    'UNKNOWN'
+                  ),
+
+                precision:
+                  typeof column.precision ===
+                    'number'
+                    ? column.precision
+                    : undefined,
+
+                scale:
+                  typeof column.scale ===
+                    'number'
+                    ? column.scale
+                    : undefined,
+
+                isNullable:
+                  typeof column.isNullable ===
+                    'number'
+                    ? column.isNullable
+                    : undefined
+              })
+            );
+
+
+      await addQueryResult(
+        rows,
+        metadata,
+        nlsSettings
+      );
 
 
   } finally {
@@ -429,16 +507,192 @@ async function runQueryWithCleanResults(
 
 
 /*
- * Add a new query result.
+ * Read display-related NLS settings
+ * from the current Oracle session.
+ */
+async function getNlsSettings(
+  session:
+    NonNullable<Worksheet['session']>
+): Promise<NlsSettings> {
+
+
+  let nlsResultSet:
+    ResultSet | undefined;
+
+
+  try {
+
+    nlsResultSet =
+      await session.executeQuery(
+
+        {
+          sql: `
+            select parameter,
+                   value
+            from nls_session_parameters
+            where parameter in (
+              'NLS_DATE_FORMAT',
+              'NLS_TIMESTAMP_FORMAT'
+            )
+          `
+        },
+
+        {
+          pageSize:
+            10
+        }
+
+      );
+
+
+    const rows =
+      nlsResultSet.rows();
+
+
+    let dateFormat =
+      'DD-MON-RR';
+
+    let timestampFormat =
+      'DD-MON-RR HH.MI.SSXFF AM';
+
+
+    for (
+      const row of rows
+    ) {
+
+      const parameter =
+        getRowValue(
+          row,
+          'PARAMETER'
+        );
+
+      const value =
+        getRowValue(
+          row,
+          'VALUE'
+        );
+
+
+      if (
+        parameter ===
+        undefined ||
+        value ===
+        undefined
+      ) {
+
+        continue;
+
+      }
+
+
+      const parameterName =
+        String(
+          parameter
+        )
+          .toUpperCase();
+
+
+      const formatValue =
+        String(
+          value
+        );
+
+
+      if (
+        parameterName ===
+        'NLS_DATE_FORMAT'
+      ) {
+
+        dateFormat =
+          formatValue;
+
+      }
+
+
+      if (
+        parameterName ===
+        'NLS_TIMESTAMP_FORMAT'
+      ) {
+
+        timestampFormat =
+          formatValue;
+
+      }
+
+    }
+
+
+    return {
+      dateFormat,
+      timestampFormat
+    };
+
+
+  } finally {
+
+    if (nlsResultSet) {
+
+      await nlsResultSet.close();
+
+    }
+
+  }
+
+}
+
+
+/*
+ * Retrieve a row value without depending
+ * on Oracle returning a particular case
+ * for the column name.
+ */
+function getRowValue(
+  row:
+    Record<string, unknown>,
+
+  columnName:
+    string
+): unknown {
+
+
+  const matchingKey =
+    Object.keys(row)
+      .find(
+        key =>
+          key.toUpperCase() ===
+          columnName.toUpperCase()
+      );
+
+
+  if (!matchingKey) {
+
+    return undefined;
+
+  }
+
+
+  return row[
+    matchingKey
+  ];
+
+}
+
+
+/*
+ * Add results to the tab manager.
  *
- * If the active result is NOT pinned,
- * reuse that tab.
- *
- * If it IS pinned, create a new tab.
+ * An unpinned active tab is reused.
+ * A pinned active tab causes a new tab.
  */
 async function addQueryResult(
   rows:
-    Array<Record<string, unknown>>
+    Array<Record<string, unknown>>,
+
+  metadata:
+    ColumnMetadata[],
+
+  nlsSettings:
+    NlsSettings
 ): Promise<void> {
 
 
@@ -451,20 +705,17 @@ async function addQueryResult(
     !activeTab.pinned
   ) {
 
-    /*
-     * Reuse the current unpinned tab.
-     */
     activeTab.rows =
       rows;
 
+    activeTab.metadata =
+      metadata;
+
+    activeTab.nlsSettings =
+      nlsSettings;
+
   } else {
 
-    /*
-     * Current tab is pinned,
-     * or this is our first query.
-     *
-     * Create a fresh working result tab.
-     */
     const newTab:
       ResultTab = {
 
@@ -476,8 +727,12 @@ async function addQueryResult(
 
         rows,
 
+        metadata,
+
         pinned:
-          false
+          false,
+
+        nlsSettings
 
       };
 
@@ -496,9 +751,6 @@ async function addQueryResult(
   }
 
 
-  /*
-   * Open/reveal the bottom panel.
-   */
   await vscode.commands
     .executeCommand(
       `workbench.view.extension.${RESULTS_CONTAINER_ID}`
@@ -511,7 +763,7 @@ async function addQueryResult(
 
 
 /*
- * Return the currently active tab.
+ * Return the active results tab.
  */
 function getActiveResultTab():
   ResultTab | undefined {
@@ -538,7 +790,7 @@ function getActiveResultTab():
 
 
 /*
- * Switch between result tabs.
+ * Switch result tabs.
  */
 function selectResultTab(
   id:
@@ -554,7 +806,9 @@ function selectResultTab(
 
 
   if (!exists) {
+
     return;
+
   }
 
 
@@ -568,7 +822,7 @@ function selectResultTab(
 
 
 /*
- * Pin or unpin a result.
+ * Pin or unpin a result tab.
  */
 function toggleResultPin(
   id:
@@ -584,7 +838,9 @@ function toggleResultPin(
 
 
   if (!tab) {
+
     return;
+
   }
 
 
@@ -592,10 +848,6 @@ function toggleResultPin(
     !tab.pinned;
 
 
-  /*
-   * Clicking the pin on a tab also
-   * makes that tab active.
-   */
   activeResultId =
     id;
 
@@ -641,10 +893,6 @@ function closeResultTab(
   );
 
 
-  /*
-   * If the active tab was closed,
-   * select a sensible neighbouring tab.
-   */
   if (wasActive) {
 
     if (
@@ -680,13 +928,15 @@ function closeResultTab(
 
 
 /*
- * Render the whole results panel.
+ * Render the complete results panel.
  */
 function renderResultsView(): void {
 
 
   if (!resultsView) {
+
     return;
+
   }
 
 
@@ -697,7 +947,7 @@ function renderResultsView(): void {
 
 
 /*
- * Construct the webview HTML.
+ * Build the full webview HTML.
  */
 function buildResultsHtml():
   string {
@@ -805,9 +1055,6 @@ function buildResultsHtml():
   }
 
 
-  /*
-   * Results tab strip.
-   */
   .tabs {
     display:
       flex;
@@ -966,9 +1213,6 @@ function buildResultsHtml():
   }
 
 
-  /*
-   * Small result information bar.
-   */
   .status {
     display:
       flex;
@@ -985,6 +1229,12 @@ function buildResultsHtml():
     padding:
       0 10px;
 
+    overflow-x:
+      auto;
+
+    overflow-y:
+      hidden;
+
     border-bottom:
       1px solid
       var(--vscode-panel-border);
@@ -999,9 +1249,6 @@ function buildResultsHtml():
   }
 
 
-  /*
-   * Result grid.
-   */
   .grid-wrap {
     overflow:
       auto;
@@ -1115,6 +1362,20 @@ function buildResultsHtml():
 
     <span>
       NULL values are blank
+    </span>
+
+    <span>
+      NLS_DATE_FORMAT:
+      ${escapeHtml(
+        activeTab.nlsSettings.dateFormat
+      )}
+    </span>
+
+    <span>
+      NLS_TIMESTAMP_FORMAT:
+      ${escapeHtml(
+        activeTab.nlsSettings.timestampFormat
+      )}
     </span>
 
     ${
@@ -1240,6 +1501,9 @@ function buildTabHtml(
 
 /*
  * Build the active result grid.
+ *
+ * Column order and datatype information
+ * come directly from Oracle metadata.
  */
 function buildGridHtml(
   tab:
@@ -1249,7 +1513,7 @@ function buildGridHtml(
 
   const columns =
     getColumns(
-      tab.rows
+      tab
     );
 
 
@@ -1257,7 +1521,7 @@ function buildGridHtml(
     columns
       .map(
         column =>
-          `<th>${escapeHtml(column)}</th>`
+          `<th>${escapeHtml(column.name)}</th>`
       )
       .join('');
 
@@ -1292,12 +1556,19 @@ function buildGridHtml(
                     column => {
 
                       const value =
-                        row[column];
+                        getRowValue(
+                          row,
+                          column.name
+                        );
 
 
                       return `
                         <td>
-                          ${formatCell(value)}
+                          ${formatCell(
+                            value,
+                            column,
+                            tab.nlsSettings
+                          )}
                         </td>
                       `;
 
@@ -1341,6 +1612,74 @@ function buildGridHtml(
 
 </div>
 `;
+
+}
+
+
+/*
+ * Return Oracle metadata when available.
+ *
+ * The fallback exists only as protection
+ * in case a future ResultSet does not
+ * provide metadata for some reason.
+ */
+function getColumns(
+  tab:
+    ResultTab
+): ColumnMetadata[] {
+
+
+  if (
+    tab.metadata.length >
+    0
+  ) {
+
+    return tab.metadata;
+
+  }
+
+
+  const columns:
+    ColumnMetadata[] = [];
+
+  const seen =
+    new Set<string>();
+
+
+  for (
+    const row of tab.rows
+  ) {
+
+    for (
+      const key of
+        Object.keys(row)
+    ) {
+
+      if (
+        !seen.has(key)
+      ) {
+
+        seen.add(
+          key
+        );
+
+
+        columns.push({
+          name:
+            key,
+
+          dataType:
+            'UNKNOWN'
+        });
+
+      }
+
+    }
+
+  }
+
+
+  return columns;
 
 }
 
@@ -1417,65 +1756,25 @@ function buildWelcomeHtml():
 
 
 /*
- * Determine grid columns.
- */
-function getColumns(
-  rows:
-    Array<Record<string, unknown>>
-): string[] {
-
-
-  const columns:
-    string[] = [];
-
-
-  const seen =
-    new Set<string>();
-
-
-  for (
-    const row of rows
-  ) {
-
-    for (
-      const key of
-        Object.keys(row)
-    ) {
-
-      if (
-        !seen.has(key)
-      ) {
-
-        seen.add(key);
-
-        columns.push(
-          key
-        );
-
-      }
-
-    }
-
-  }
-
-
-  return columns;
-
-}
-
-
-/*
- * Format individual values.
- *
- * Oracle NULL / undefined values
- * deliberately render as blank.
+ * Format a database value according
+ * to its actual Oracle datatype.
  */
 function formatCell(
   value:
-    unknown
+    unknown,
+
+  column:
+    ColumnMetadata,
+
+  nlsSettings:
+    NlsSettings
 ): string {
 
 
+  /*
+   * The original purpose of this extension:
+   * genuine database NULLs display blank.
+   */
   if (
     value === null ||
     value === undefined
@@ -1486,17 +1785,104 @@ function formatCell(
   }
 
 
+  const dataType =
+    column.dataType
+      ?.toUpperCase()
+    ?? '';
+
+
+  /*
+   * Oracle DATE.
+   */
   if (
-    value instanceof Date
+    dataType ===
+    'DATE'
   ) {
 
-    return escapeHtml(
-      value.toISOString()
-    );
+    if (
+      typeof value ===
+      'string'
+    ) {
+
+      return escapeHtml(
+        formatOracleTemporalString(
+          value,
+          nlsSettings.dateFormat
+        )
+      );
+
+    }
+
+
+    if (
+      value instanceof Date
+    ) {
+
+      return escapeHtml(
+        formatTemporalParts(
+          getPartsFromDate(
+            value
+          ),
+          nlsSettings.dateFormat
+        )
+      );
+
+    }
 
   }
 
 
+  /*
+   * Oracle TIMESTAMP.
+   *
+   * Using startsWith also gives sensible
+   * behaviour if Oracle exposes a more
+   * specific TIMESTAMP datatype name.
+   */
+  if (
+    dataType.startsWith(
+      'TIMESTAMP'
+    )
+  ) {
+
+    if (
+      typeof value ===
+      'string'
+    ) {
+
+      return escapeHtml(
+        formatOracleTemporalString(
+          value,
+          nlsSettings.timestampFormat
+        )
+      );
+
+    }
+
+
+    if (
+      value instanceof Date
+    ) {
+
+      return escapeHtml(
+        formatTemporalParts(
+          getPartsFromDate(
+            value
+          ),
+          nlsSettings.timestampFormat
+        )
+      );
+
+    }
+
+  }
+
+
+  /*
+   * Do not interpret VARCHAR2 or other
+   * character values as dates simply
+   * because they happen to look like one.
+   */
   if (
     typeof value ===
     'object'
@@ -1529,8 +1915,457 @@ function formatCell(
 
 
 /*
- * Prevent returned values being
- * interpreted as HTML.
+ * Components of an Oracle DATE/TIMESTAMP.
+ */
+interface TemporalParts {
+
+  year:
+    number;
+
+  month:
+    number;
+
+  day:
+    number;
+
+  hours:
+    number;
+
+  minutes:
+    number;
+
+  seconds:
+    number;
+
+  fractionalSeconds:
+    string;
+
+}
+
+
+/*
+ * Parse the ISO-style temporal strings
+ * returned by Oracle SQL Developer.
+ *
+ * Examples:
+ *
+ * 2026-09-12T18:30
+ * 2026-09-12T18:30:45
+ * 2026-09-12T18:30:45.123456
+ */
+function parseOracleTemporalString(
+  value:
+    string
+): TemporalParts | undefined {
+
+
+  const match =
+    value.match(
+      /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?/
+    );
+
+
+  if (!match) {
+
+    return undefined;
+
+  }
+
+
+  return {
+
+    year:
+      Number(
+        match[1]
+      ),
+
+    month:
+      Number(
+        match[2]
+      ),
+
+    day:
+      Number(
+        match[3]
+      ),
+
+    hours:
+      Number(
+        match[4]
+      ),
+
+    minutes:
+      Number(
+        match[5]
+      ),
+
+    seconds:
+      Number(
+        match[6] ??
+        '0'
+      ),
+
+    fractionalSeconds:
+      match[7] ??
+      ''
+
+  };
+
+}
+
+
+/*
+ * Apply the required NLS format to an
+ * Oracle-returned temporal string.
+ */
+function formatOracleTemporalString(
+  value:
+    string,
+
+  format:
+    string
+): string {
+
+
+  const parts =
+    parseOracleTemporalString(
+      value
+    );
+
+
+  if (!parts) {
+
+    return value;
+
+  }
+
+
+  return formatTemporalParts(
+    parts,
+    format
+  );
+
+}
+
+
+/*
+ * Fallback for a genuine JavaScript Date.
+ */
+function getPartsFromDate(
+  value:
+    Date
+): TemporalParts {
+
+
+  return {
+
+    year:
+      value.getFullYear(),
+
+    month:
+      value.getMonth() + 1,
+
+    day:
+      value.getDate(),
+
+    hours:
+      value.getHours(),
+
+    minutes:
+      value.getMinutes(),
+
+    seconds:
+      value.getSeconds(),
+
+    fractionalSeconds:
+      String(
+        value.getMilliseconds()
+      )
+        .padStart(
+          3,
+          '0'
+        )
+
+  };
+
+}
+
+
+/*
+ * Apply common Oracle DATE/TIMESTAMP
+ * format-model tokens.
+ *
+ * Supported:
+ *
+ * YYYY
+ * RRRR
+ * YY
+ * RR
+ *
+ * MM
+ * MON
+ *
+ * DD
+ *
+ * HH24
+ * HH12
+ * HH
+ *
+ * MI
+ * SS
+ *
+ * FF
+ * FF1 through FF9
+ *
+ * X
+ *
+ * AM
+ * PM
+ */
+function formatTemporalParts(
+  parts:
+    TemporalParts,
+
+  format:
+    string
+): string {
+
+
+  const monthNames = [
+    'JAN',
+    'FEB',
+    'MAR',
+    'APR',
+    'MAY',
+    'JUN',
+    'JUL',
+    'AUG',
+    'SEP',
+    'OCT',
+    'NOV',
+    'DEC'
+  ];
+
+
+  const pad =
+    (
+      number:
+        number,
+
+      length =
+        2
+    ) =>
+      String(
+        number
+      )
+        .padStart(
+          length,
+          '0'
+        );
+
+
+  const hours12 =
+    parts.hours %
+      12 ===
+      0
+      ? 12
+      : parts.hours %
+        12;
+
+
+  const meridiem =
+    parts.hours <
+      12
+      ? 'AM'
+      : 'PM';
+
+
+  /*
+   * Oracle fractional seconds can have
+   * up to 9 digits.
+   *
+   * Pad to 9 so FF1-FF9 can be honoured
+   * consistently.
+   */
+  const fractionalSeconds =
+    parts.fractionalSeconds
+      .padEnd(
+        9,
+        '0'
+      )
+      .slice(
+        0,
+        9
+      );
+
+
+  /*
+   * Longest tokens appear first so
+   * HH24 is not mistaken for HH, etc.
+   */
+  return format.replace(
+
+    /HH24|HH12|YYYY|RRRR|FF[1-9]?|MON|MM|DD|MI|SS|AM|PM|RR|YY|HH|X/gi,
+
+    token => {
+
+      const upperToken =
+        token.toUpperCase();
+
+
+      switch (
+        upperToken
+      ) {
+
+        case 'YYYY':
+        case 'RRRR':
+
+          return String(
+            parts.year
+          );
+
+
+        case 'YY':
+        case 'RR':
+
+          return pad(
+            parts.year %
+              100
+          );
+
+
+        case 'MM':
+
+          return pad(
+            parts.month
+          );
+
+
+        case 'MON':
+
+          return monthNames[
+            parts.month - 1
+          ];
+
+
+        case 'DD':
+
+          return pad(
+            parts.day
+          );
+
+
+        case 'HH24':
+
+          return pad(
+            parts.hours
+          );
+
+
+        case 'HH12':
+        case 'HH':
+
+          return pad(
+            hours12
+          );
+
+
+        case 'MI':
+
+          return pad(
+            parts.minutes
+          );
+
+
+        case 'SS':
+
+          return pad(
+            parts.seconds
+          );
+
+
+        case 'AM':
+        case 'PM':
+
+          return meridiem;
+
+
+        /*
+         * Oracle X represents the
+         * local radix character.
+         *
+         * A decimal point is appropriate
+         * for our current display purpose.
+         */
+        case 'X':
+
+          return '.';
+
+
+        case 'FF':
+
+          /*
+           * Bare FF displays the available
+           * fractional second precision.
+           *
+           * If Oracle returned no fractional
+           * seconds, display zero.
+           */
+          return parts.fractionalSeconds
+            || '0';
+
+
+        default:
+
+          /*
+           * FF1 through FF9.
+           */
+          if (
+            upperToken.startsWith(
+              'FF'
+            )
+          ) {
+
+            const requestedDigits =
+              Number(
+                upperToken.substring(
+                  2
+                )
+              );
+
+
+            if (
+              requestedDigits >=
+                1 &&
+              requestedDigits <=
+                9
+            ) {
+
+              return fractionalSeconds
+                .substring(
+                  0,
+                  requestedDigits
+                );
+
+            }
+
+          }
+
+
+          return token;
+
+      }
+
+    }
+
+  );
+
+}
+
+
+/*
+ * Prevent returned database values from
+ * being interpreted as HTML.
  */
 function escapeHtml(
   value:
