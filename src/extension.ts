@@ -22,6 +22,10 @@ const RESULTS_CONTAINER_ID =
 const PAGE_SIZE =
   500;
 
+const outputChannel =
+  vscode.window.createOutputChannel(
+    'Oracle Clean Results'
+  );
 
 interface NlsSettings {
 
@@ -369,6 +373,16 @@ export async function deactivate():
 }
 
 
+/*
+ * Main execution entry point.
+ *
+ * No selection:
+ *   Run the statement containing the cursor.
+ *
+ * Selection:
+ *   Split selected SELECT statements and run
+ *   each one into its own results tab.
+ */
 async function runQueryWithCleanResults(
   worksheet:
     Worksheet
@@ -396,53 +410,33 @@ async function runQueryWithCleanResults(
     editor.selection;
 
 
-  let sql:
-    string;
+  /*
+   * Existing behaviour:
+   *
+   * No selection means ask Oracle which
+   * statement contains the cursor.
+   */
+if (
+  selection.isEmpty
+) {
+
+  const documentSql =
+    editor.document
+      .getText();
 
 
-  if (!selection.isEmpty) {
-
-    sql =
-      editor.document
-        .getText(
-          selection
-        )
-        .trim();
-
-  } else {
-
-    const documentSql =
-      editor.document
-        .getText();
-
-
-    const cursor =
-      editor.selection
-        .active;
-
-
-    const prepared =
-      await session.prepareSql(
-
-        documentSql,
-
-        {
-          line:
-            cursor.line,
-
-          character:
-            cursor.character
-        }
-
+  const cursorOffset =
+    editor.document
+      .offsetAt(
+        editor.selection.active
       );
 
 
-    sql =
-      prepared.statementText
-        ?.trim()
-      ?? '';
-
-  }
+  const sql =
+    findStatementAtOffset(
+      documentSql,
+      cursorOffset
+    );
 
 
   if (!sql) {
@@ -453,6 +447,168 @@ async function runQueryWithCleanResults(
     );
 
   }
+
+
+  if (
+    !isSelectStatement(
+      sql
+    )
+  ) {
+
+    throw new Error(
+      'The current statement is not a SELECT query. ' +
+      'Clean Results currently supports SELECT and WITH queries only.'
+    );
+
+  }
+
+
+  await executeCleanQuery(
+    session,
+    sql,
+    false
+  );
+
+
+  return;
+
+}
+
+
+  /*
+   * New v0.0.7 behaviour:
+   *
+   * A selection may contain one or
+   * several SELECT statements.
+   */
+  const selectedSql =
+    editor.document
+      .getText(
+        selection
+      );
+
+
+  const statements =
+    splitSelectedStatements(
+      selectedSql
+    );
+
+    outputChannel.appendLine(
+      '--- Selected SQL ---'
+    );
+
+    outputChannel.appendLine(
+      selectedSql
+    );
+
+    outputChannel.appendLine(
+      `Statements found: ${statements.length}`
+    );
+
+    statements.forEach(
+      (statement, index) => {
+
+        outputChannel.appendLine(
+          `--- Statement ${index + 1} ---`
+        );
+
+        outputChannel.appendLine(
+          statement
+        );
+
+      }
+    );
+
+    outputChannel.show();
+
+
+  if (
+    statements.length ===
+    0
+  ) {
+
+    throw new Error(
+      'No SQL statements were found ' +
+      'in the selected text.'
+    );
+
+  }
+
+
+  /*
+   * v0.0.7 deliberately supports
+   * SELECT / WITH queries only.
+   */
+  for (
+    let index = 0;
+    index < statements.length;
+    index++
+  ) {
+
+    const statement =
+      statements[
+        index
+      ];
+
+
+    if (
+      !isSelectStatement(
+        statement
+      )
+    ) {
+
+      throw new Error(
+        `Statement ${index + 1} of ` +
+        `${statements.length} is not a SELECT query. ` +
+        'Multiple-statement Clean Results currently ' +
+        'supports SELECT and WITH queries only.'
+      );
+
+    }
+
+  }
+
+
+  /*
+   * Execute sequentially.
+   *
+   * First query behaves normally and may
+   * replace the active unpinned tab.
+   *
+   * Every subsequent query is forced into
+   * a new results tab.
+   */
+  for (
+    let index = 0;
+    index < statements.length;
+    index++
+  ) {
+
+    await executeCleanQuery(
+      session,
+      statements[index],
+      index > 0
+    );
+
+  }
+
+}
+
+
+/*
+ * Execute one SELECT and create/update
+ * its Clean Results tab.
+ */
+async function executeCleanQuery(
+  session:
+    NonNullable<Worksheet['session']>,
+
+  sql:
+    string,
+
+  forceNewTab:
+    boolean
+): Promise<void> {
 
 
   const nlsSettings =
@@ -471,11 +627,33 @@ async function runQueryWithCleanResults(
 
   try {
 
+    console.log(
+      'Oracle Clean Results executing:',
+      sql
+    );
+
+const executableSql =
+  removeLeadingComments(
+    sql
+  )
+    .trim();
+
+    outputChannel.appendLine(
+      '--- About to execute ---'
+    );
+
+    outputChannel.appendLine(
+      executableSql
+    );
+
+    outputChannel.show();
+
     resultSet =
       await session.executeQuery(
 
         {
-          sql
+          sql:
+            executableSql
         },
 
         {
@@ -553,10 +731,15 @@ async function runQueryWithCleanResults(
       nlsSettings,
       resultSet,
       hasMore,
-      elapsedMs
+      elapsedMs,
+      forceNewTab
     );
 
 
+    /*
+     * ResultTab now owns the open
+     * ResultSet if additional rows exist.
+     */
     resultSet =
       undefined;
 
@@ -574,6 +757,1055 @@ async function runQueryWithCleanResults(
 }
 
 
+/*
+ * Split SELECT statements in a selection.
+ *
+ * We intentionally do not simply use:
+ *
+ *   text.split(';')
+ *
+ * because semicolons may legitimately
+ * appear inside strings or comments.
+ *
+ * This parser understands:
+ *
+ *   'single quoted strings'
+ *   "quoted identifiers"
+ *   -- line comments
+ *   /* block comments * /
+ *   Oracle q'[...]' quoting
+ *
+ * PL/SQL execution is deliberately not
+ * supported by the multi-query feature yet.
+ */
+
+function findStatementAtOffset(
+  text:
+    string,
+
+  cursorOffset:
+    number
+): string | undefined {
+
+
+  let statementStart =
+    0;
+
+  let inSingleQuote =
+    false;
+
+  let inDoubleQuote =
+    false;
+
+  let inLineComment =
+    false;
+
+  let inBlockComment =
+    false;
+
+  let inQQuote =
+    false;
+
+  let qQuoteEnd =
+    '';
+
+  let index =
+    0;
+
+
+  while (
+    index <
+    text.length
+  ) {
+
+    const char =
+      text[index];
+
+    const nextChar =
+      index + 1 <
+        text.length
+        ? text[index + 1]
+        : '';
+
+
+    /*
+     * Line comment.
+     */
+    if (
+      inLineComment
+    ) {
+
+      if (
+        char === '\n'
+      ) {
+
+        inLineComment =
+          false;
+
+      }
+
+
+      index++;
+
+      continue;
+
+    }
+
+
+    /*
+     * Block comment.
+     */
+    if (
+      inBlockComment
+    ) {
+
+      if (
+        char === '*' &&
+        nextChar === '/'
+      ) {
+
+        index +=
+          2;
+
+        inBlockComment =
+          false;
+
+        continue;
+
+      }
+
+
+      index++;
+
+      continue;
+
+    }
+
+
+    /*
+     * Oracle q-quoted string.
+     */
+    if (
+      inQQuote
+    ) {
+
+      if (
+        char === qQuoteEnd &&
+        nextChar === "'"
+      ) {
+
+        index +=
+          2;
+
+        inQQuote =
+          false;
+
+        qQuoteEnd =
+          '';
+
+        continue;
+
+      }
+
+
+      index++;
+
+      continue;
+
+    }
+
+
+    /*
+     * Standard single-quoted string.
+     */
+    if (
+      inSingleQuote
+    ) {
+
+      if (
+        char === "'"
+      ) {
+
+        if (
+          nextChar === "'"
+        ) {
+
+          index +=
+            2;
+
+          continue;
+
+        }
+
+
+        inSingleQuote =
+          false;
+
+      }
+
+
+      index++;
+
+      continue;
+
+    }
+
+
+    /*
+     * Double-quoted identifier.
+     */
+    if (
+      inDoubleQuote
+    ) {
+
+      if (
+        char === '"'
+      ) {
+
+        if (
+          nextChar === '"'
+        ) {
+
+          index +=
+            2;
+
+          continue;
+
+        }
+
+
+        inDoubleQuote =
+          false;
+
+      }
+
+
+      index++;
+
+      continue;
+
+    }
+
+
+    /*
+     * Start line comment.
+     */
+    if (
+      char === '-' &&
+      nextChar === '-'
+    ) {
+
+      inLineComment =
+        true;
+
+      index +=
+        2;
+
+      continue;
+
+    }
+
+
+    /*
+     * Start block comment.
+     */
+    if (
+      char === '/' &&
+      nextChar === '*'
+    ) {
+
+      inBlockComment =
+        true;
+
+      index +=
+        2;
+
+      continue;
+
+    }
+
+
+    /*
+     * Start Oracle q quote.
+     */
+    if (
+      (
+        char === 'q' ||
+        char === 'Q'
+      ) &&
+      nextChar === "'" &&
+      index + 2 <
+        text.length
+    ) {
+
+      const delimiter =
+        text[
+          index + 2
+        ];
+
+
+      qQuoteEnd =
+        getQQuoteEndDelimiter(
+          delimiter
+        );
+
+
+      inQQuote =
+        true;
+
+      index +=
+        3;
+
+      continue;
+
+    }
+
+
+    /*
+     * Start single quote.
+     */
+    if (
+      char === "'"
+    ) {
+
+      inSingleQuote =
+        true;
+
+      index++;
+
+      continue;
+
+    }
+
+
+    /*
+     * Start quoted identifier.
+     */
+    if (
+      char === '"'
+    ) {
+
+      inDoubleQuote =
+        true;
+
+      index++;
+
+      continue;
+
+    }
+
+
+    /*
+     * Statement terminator.
+     */
+    if (
+      char === ';'
+    ) {
+
+      const statementEnd =
+        index;
+
+
+      /*
+       * Treat the semicolon itself as part
+       * of the statement for cursor-location
+       * purposes.
+       */
+      if (
+        cursorOffset >=
+          statementStart &&
+        cursorOffset <=
+          index
+      ) {
+
+        const statement =
+          text
+            .substring(
+              statementStart,
+              statementEnd
+            )
+            .trim();
+
+
+        return statement ||
+          undefined;
+
+      }
+
+
+      statementStart =
+        index + 1;
+
+    }
+
+
+    index++;
+
+  }
+
+
+  /*
+   * Final statement may not have a
+   * terminating semicolon.
+   */
+  if (
+    cursorOffset >=
+      statementStart &&
+    cursorOffset <=
+      text.length
+  ) {
+
+    const statement =
+      text
+        .substring(
+          statementStart
+        )
+        .trim();
+
+
+    return statement ||
+      undefined;
+
+  }
+
+
+  return undefined;
+
+}
+
+function splitSelectedStatements(
+  text:
+    string
+): string[] {
+
+
+  const statements:
+    string[] = [];
+
+  let current =
+    '';
+
+  let inSingleQuote =
+    false;
+
+  let inDoubleQuote =
+    false;
+
+  let inLineComment =
+    false;
+
+  let inBlockComment =
+    false;
+
+  let inQQuote =
+    false;
+
+  let qQuoteEnd =
+    '';
+
+  let index =
+    0;
+
+
+  while (
+    index <
+    text.length
+  ) {
+
+    const char =
+      text[index];
+
+    const nextChar =
+      index + 1 <
+        text.length
+        ? text[index + 1]
+        : '';
+
+
+    /*
+     * Line comment.
+     */
+    if (
+      inLineComment
+    ) {
+
+      current +=
+        char;
+
+
+      if (
+        char === '\n'
+      ) {
+
+        inLineComment =
+          false;
+
+      }
+
+
+      index++;
+
+      continue;
+
+    }
+
+
+    /*
+     * Block comment.
+     */
+    if (
+      inBlockComment
+    ) {
+
+      current +=
+        char;
+
+
+      if (
+        char === '*' &&
+        nextChar === '/'
+      ) {
+
+        current +=
+          nextChar;
+
+        index +=
+          2;
+
+        inBlockComment =
+          false;
+
+        continue;
+
+      }
+
+
+      index++;
+
+      continue;
+
+    }
+
+
+    /*
+     * Oracle q-quoted string.
+     *
+     * Examples:
+     *
+     * q'[hello; world]'
+     * q'{hello; world}'
+     * q'(hello; world)'
+     * q'<hello; world>'
+     * q'!hello; world!'
+     */
+    if (
+      inQQuote
+    ) {
+
+      current +=
+        char;
+
+
+      if (
+        char === qQuoteEnd &&
+        nextChar === "'"
+      ) {
+
+        current +=
+          nextChar;
+
+        index +=
+          2;
+
+        inQQuote =
+          false;
+
+        qQuoteEnd =
+          '';
+
+        continue;
+
+      }
+
+
+      index++;
+
+      continue;
+
+    }
+
+
+    /*
+     * Standard single-quoted string.
+     */
+    if (
+      inSingleQuote
+    ) {
+
+      current +=
+        char;
+
+
+      if (
+        char === "'"
+      ) {
+
+        /*
+         * Oracle escaped quote:
+         *
+         * 'That''s okay'
+         */
+        if (
+          nextChar === "'"
+        ) {
+
+          current +=
+            nextChar;
+
+          index +=
+            2;
+
+          continue;
+
+        }
+
+
+        inSingleQuote =
+          false;
+
+      }
+
+
+      index++;
+
+      continue;
+
+    }
+
+
+    /*
+     * Double-quoted Oracle identifier.
+     */
+    if (
+      inDoubleQuote
+    ) {
+
+      current +=
+        char;
+
+
+      if (
+        char === '"'
+      ) {
+
+        if (
+          nextChar === '"'
+        ) {
+
+          current +=
+            nextChar;
+
+          index +=
+            2;
+
+          continue;
+
+        }
+
+
+        inDoubleQuote =
+          false;
+
+      }
+
+
+      index++;
+
+      continue;
+
+    }
+
+
+    /*
+     * Start line comment.
+     */
+    if (
+      char === '-' &&
+      nextChar === '-'
+    ) {
+
+      current +=
+        char;
+
+      current +=
+        nextChar;
+
+      index +=
+        2;
+
+      inLineComment =
+        true;
+
+      continue;
+
+    }
+
+
+    /*
+     * Start block comment.
+     */
+    if (
+      char === '/' &&
+      nextChar === '*'
+    ) {
+
+      current +=
+        char;
+
+      current +=
+        nextChar;
+
+      index +=
+        2;
+
+      inBlockComment =
+        true;
+
+      continue;
+
+    }
+
+
+    /*
+     * Start Oracle q quote.
+     */
+    if (
+      (
+        char === 'q' ||
+        char === 'Q'
+      ) &&
+      nextChar === "'" &&
+      index + 2 <
+        text.length
+    ) {
+
+      const delimiter =
+        text[
+          index + 2
+        ];
+
+
+      const matchingDelimiter =
+        getQQuoteEndDelimiter(
+          delimiter
+        );
+
+
+      current +=
+        char;
+
+      current +=
+        nextChar;
+
+      current +=
+        delimiter;
+
+
+      qQuoteEnd =
+        matchingDelimiter;
+
+      inQQuote =
+        true;
+
+      index +=
+        3;
+
+      continue;
+
+    }
+
+
+    /*
+     * Start regular single quote.
+     */
+    if (
+      char === "'"
+    ) {
+
+      current +=
+        char;
+
+      inSingleQuote =
+        true;
+
+      index++;
+
+      continue;
+
+    }
+
+
+    /*
+     * Start quoted identifier.
+     */
+    if (
+      char === '"'
+    ) {
+
+      current +=
+        char;
+
+      inDoubleQuote =
+        true;
+
+      index++;
+
+      continue;
+
+    }
+
+
+    /*
+     * Statement terminator.
+     *
+     * We only treat semicolon as a
+     * terminator when outside all quoted
+     * strings and comments.
+     */
+    if (
+      char === ';'
+    ) {
+
+      const statement =
+        current.trim();
+
+
+      if (
+        statement
+      ) {
+
+        statements.push(
+          statement
+        );
+
+      }
+
+
+      current =
+        '';
+
+      index++;
+
+      continue;
+
+    }
+
+
+    current +=
+      char;
+
+    index++;
+
+  }
+
+
+  /*
+   * Last statement does not require
+   * a terminating semicolon.
+   */
+  const finalStatement =
+    current.trim();
+
+
+  if (
+    finalStatement
+  ) {
+
+    statements.push(
+      finalStatement
+    );
+
+  }
+
+
+  return statements;
+
+}
+
+
+/*
+ * Oracle q-quote closing delimiter.
+ */
+function getQQuoteEndDelimiter(
+  delimiter:
+    string
+): string {
+
+
+  switch (
+    delimiter
+  ) {
+
+    case '[':
+
+      return ']';
+
+
+    case '{':
+
+      return '}';
+
+
+    case '(':
+
+      return ')';
+
+
+    case '<':
+
+      return '>';
+
+
+    default:
+
+      return delimiter;
+
+  }
+
+}
+
+
+/*
+ * Remove leading whitespace/comments
+ * sufficiently to determine whether the
+ * statement begins SELECT or WITH.
+ */
+function isSelectStatement(
+  sql:
+    string
+): boolean {
+
+
+  const cleaned =
+    removeLeadingComments(
+      sql
+    )
+      .trimStart();
+
+
+  return (
+    /^select\b/i.test(
+      cleaned
+    ) ||
+    /^with\b/i.test(
+      cleaned
+    )
+  );
+
+}
+
+
+/*
+ * Ignore comments before a SELECT.
+ *
+ * Example:
+ *
+ * -- Employee query
+ * select ...
+ */
+function removeLeadingComments(
+  sql:
+    string
+): string {
+
+
+  let remaining =
+    sql;
+
+
+  while (true) {
+
+    const trimmed =
+      remaining.trimStart();
+
+
+    /*
+     * Leading line comment.
+     */
+    if (
+      trimmed.startsWith(
+        '--'
+      )
+    ) {
+
+      const newline =
+        trimmed.indexOf(
+          '\n'
+        );
+
+
+      if (
+        newline ===
+        -1
+      ) {
+
+        return '';
+
+      }
+
+
+      remaining =
+        trimmed.substring(
+          newline + 1
+        );
+
+      continue;
+
+    }
+
+
+    /*
+     * Leading block comment.
+     */
+    if (
+      trimmed.startsWith(
+        '/*'
+      )
+    ) {
+
+      const end =
+        trimmed.indexOf(
+          '*/'
+        );
+
+
+      if (
+        end ===
+        -1
+      ) {
+
+        return '';
+
+      }
+
+
+      remaining =
+        trimmed.substring(
+          end + 2
+        );
+
+      continue;
+
+    }
+
+
+    return trimmed;
+
+  }
+
+}
+
+
 async function getNlsSettings(
   session:
     NonNullable<Worksheet['session']>
@@ -584,10 +1816,14 @@ async function getNlsSettings(
     ResultSet | undefined;
 
 
-  try {
+    try {
 
-    nlsResultSet =
-      await session.executeQuery(
+      outputChannel.appendLine(
+        '--- Getting NLS settings ---'
+      );
+
+      nlsResultSet =
+        await session.executeQuery(
 
         {
           sql: `
@@ -694,7 +1930,9 @@ async function getNlsSettings(
 
   } finally {
 
-    if (nlsResultSet) {
+    if (
+      nlsResultSet
+    ) {
 
       await nlsResultSet.close();
 
@@ -754,7 +1992,10 @@ async function addQueryResult(
     boolean,
 
   elapsedMs:
-    number
+    number,
+
+  forceNewTab =
+    false
 ): Promise<void> {
 
 
@@ -764,7 +2005,8 @@ async function addQueryResult(
 
   if (
     activeTab &&
-    !activeTab.pinned
+    !activeTab.pinned &&
+    !forceNewTab
   ) {
 
     await closeTabResultSet(
@@ -1008,13 +2250,9 @@ async function fetchAllRows(
       pageCount++;
 
 
-      /*
-       * Lightweight progress update.
-       *
-       * Do NOT rebuild the entire grid.
-       */
       if (
-        pageCount % 5 === 0
+        pageCount % 5 ===
+        0
       ) {
 
         await sendFetchProgress(
@@ -1058,10 +2296,6 @@ async function fetchAllRows(
       false;
 
 
-    /*
-     * One full render after all rows
-     * have finished fetching.
-     */
     renderResultsView();
 
   }
@@ -1069,13 +2303,6 @@ async function fetchAllRows(
 }
 
 
-/*
- * Send only the current progress values
- * to the existing webview.
- *
- * This avoids rebuilding thousands of
- * table rows on every progress update.
- */
 async function sendFetchProgress(
   tab:
     ResultTab
@@ -1109,10 +2336,7 @@ async function sendFetchProgress(
         tab.id,
 
       rowCount:
-        tab.rows.length,
-
-      elapsedMs:
-        tab.elapsedMs
+        tab.rows.length
 
     });
 
@@ -1273,7 +2497,8 @@ async function closeResultTab(
 
 
   const wasActive =
-    activeResultId === id;
+    activeResultId ===
+    id;
 
 
   await closeTabResultSet(
@@ -1287,7 +2512,9 @@ async function closeResultTab(
   );
 
 
-  if (wasActive) {
+  if (
+    wasActive
+  ) {
 
     if (
       resultTabs.length ===
@@ -1911,7 +3138,7 @@ function buildResultsHtml():
 
     ${fetchControlsHtml}
 
-    <span id="elapsed-time">
+    <span>
       ${formatElapsedTime(
         activeTab.elapsedMs
       )}
@@ -2033,11 +3260,6 @@ function buildResultsHtml():
   }
 
 
-  /*
-   * Receive lightweight progress updates
-   * from the extension without rebuilding
-   * the complete results grid.
-   */
   window.addEventListener(
     'message',
 
@@ -2073,7 +3295,9 @@ function buildResultsHtml():
         );
 
 
-      if (rowCount) {
+      if (
+        rowCount
+      ) {
 
         rowCount.textContent =
           message.rowCount +
@@ -2099,7 +3323,9 @@ function buildResultsHtml():
           'a';
 
 
-      if (!isFetchAllShortcut) {
+      if (
+        !isFetchAllShortcut
+      ) {
 
         return;
 
