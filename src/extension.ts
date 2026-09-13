@@ -23,10 +23,6 @@ const PAGE_SIZE =
   500;
 
 
-/*
- * Oracle NLS settings used for displaying
- * DATE and TIMESTAMP values.
- */
 interface NlsSettings {
 
   dateFormat:
@@ -38,10 +34,6 @@ interface NlsSettings {
 }
 
 
-/*
- * Metadata returned by the Oracle
- * SQL Developer ResultSet.
- */
 interface ColumnMetadata {
 
   name:
@@ -62,9 +54,6 @@ interface ColumnMetadata {
 }
 
 
-/*
- * A single results tab.
- */
 interface ResultTab {
 
   id:
@@ -85,18 +74,29 @@ interface ResultTab {
   nlsSettings:
     NlsSettings;
 
+  resultSet?:
+    ResultSet;
+
+  hasMore:
+    boolean;
+
+  isFetching:
+    boolean;
+
+  elapsedMs:
+    number;
+
 }
 
 
-/*
- * Messages received from the results webview.
- */
 interface WebviewMessage {
 
   command:
     | 'selectTab'
     | 'togglePin'
-    | 'closeTab';
+    | 'closeTab'
+    | 'fetchMore'
+    | 'fetchAll';
 
   id:
     number;
@@ -104,9 +104,6 @@ interface WebviewMessage {
 }
 
 
-/*
- * Extension state.
- */
 let resultsView:
   vscode.WebviewView | undefined;
 
@@ -120,9 +117,6 @@ let nextResultNumber =
   1;
 
 
-/*
- * Bottom results panel.
- */
 class ResultsViewProvider
   implements vscode.WebviewViewProvider {
 
@@ -160,37 +154,9 @@ class ResultsViewProvider
             WebviewMessage
         ) => {
 
-          switch (
-            message.command
-          ) {
-
-            case 'selectTab':
-
-              selectResultTab(
-                message.id
-              );
-
-              break;
-
-
-            case 'togglePin':
-
-              toggleResultPin(
-                message.id
-              );
-
-              break;
-
-
-            case 'closeTab':
-
-              closeResultTab(
-                message.id
-              );
-
-              break;
-
-          }
+          void handleWebviewMessage(
+            message
+          );
 
         }
       );
@@ -217,9 +183,84 @@ class ResultsViewProvider
 }
 
 
-/*
- * Extension activation.
- */
+async function handleWebviewMessage(
+  message:
+    WebviewMessage
+): Promise<void> {
+
+
+  try {
+
+    switch (
+      message.command
+    ) {
+
+      case 'selectTab':
+
+        selectResultTab(
+          message.id
+        );
+
+        break;
+
+
+      case 'togglePin':
+
+        toggleResultPin(
+          message.id
+        );
+
+        break;
+
+
+      case 'closeTab':
+
+        await closeResultTab(
+          message.id
+        );
+
+        break;
+
+
+      case 'fetchMore':
+
+        await fetchMoreRows(
+          message.id
+        );
+
+        break;
+
+
+      case 'fetchAll':
+
+        await fetchAllRows(
+          message.id
+        );
+
+        break;
+
+    }
+
+  } catch (
+    error
+  ) {
+
+    const messageText =
+      error instanceof Error
+        ? error.message
+        : String(error);
+
+
+    void vscode.window
+      .showErrorMessage(
+        `Oracle Clean Results: ${messageText}`
+      );
+
+  }
+
+}
+
+
 export async function activate(
   context:
     vscode.ExtensionContext
@@ -311,22 +352,23 @@ export async function activate(
 }
 
 
-export function deactivate(): void {
+export async function deactivate():
+  Promise<void> {
 
-  /*
-   * Result sets are closed immediately
-   * after their rows and metadata are read.
-   */
+
+  for (
+    const tab of resultTabs
+  ) {
+
+    await closeTabResultSet(
+      tab
+    );
+
+  }
 
 }
 
 
-/*
- * Execute either:
- *
- * 1. selected SQL, or
- * 2. the statement containing the cursor.
- */
 async function runQueryWithCleanResults(
   worksheet:
     Worksheet
@@ -413,10 +455,6 @@ async function runQueryWithCleanResults(
   }
 
 
-  /*
-   * Capture the current Oracle session
-   * DATE and TIMESTAMP display formats.
-   */
   const nlsSettings =
     await getNlsSettings(
       session
@@ -425,6 +463,10 @@ async function runQueryWithCleanResults(
 
   let resultSet:
     ResultSet | undefined;
+
+
+  const startTime =
+    Date.now();
 
 
   try {
@@ -444,53 +486,79 @@ async function runQueryWithCleanResults(
       );
 
 
-      const rows =
-        resultSet.rows();
+    const rows =
+      resultSet.rows();
 
 
-      const metadata:
-        ColumnMetadata[] =
-          resultSet.metadata()
-            .map(
-              column => ({
-                name:
-                  String(
-                    column.name ??
-                    ''
-                  ),
+    const metadata:
+      ColumnMetadata[] =
+        resultSet.metadata()
+          .map(
+            column => ({
+              name:
+                String(
+                  column.name ??
+                  ''
+                ),
 
-                dataType:
-                  String(
-                    column.dataType ??
-                    'UNKNOWN'
-                  ),
+              dataType:
+                String(
+                  column.dataType ??
+                  'UNKNOWN'
+                ),
 
-                precision:
-                  typeof column.precision ===
-                    'number'
-                    ? column.precision
-                    : undefined,
+              precision:
+                typeof column.precision ===
+                  'number'
+                  ? column.precision
+                  : undefined,
 
-                scale:
-                  typeof column.scale ===
-                    'number'
-                    ? column.scale
-                    : undefined,
+              scale:
+                typeof column.scale ===
+                  'number'
+                  ? column.scale
+                  : undefined,
 
-                isNullable:
-                  typeof column.isNullable ===
-                    'number'
-                    ? column.isNullable
-                    : undefined
-              })
-            );
+              isNullable:
+                typeof column.isNullable ===
+                  'number'
+                  ? column.isNullable
+                  : undefined
+            })
+          );
 
 
-      await addQueryResult(
-        rows,
-        metadata,
-        nlsSettings
-      );
+    const hasMore =
+      await resultSet.hasNext();
+
+
+    const elapsedMs =
+      Date.now() -
+      startTime;
+
+
+    if (!hasMore) {
+
+      await resultSet.close();
+
+      resultSet =
+        undefined;
+
+    }
+
+
+    await addQueryResult(
+      rows,
+      metadata,
+      nlsSettings,
+      resultSet,
+      hasMore,
+      elapsedMs
+    );
+
+
+    resultSet =
+      undefined;
 
 
   } finally {
@@ -506,10 +574,6 @@ async function runQueryWithCleanResults(
 }
 
 
-/*
- * Read display-related NLS settings
- * from the current Oracle session.
- */
 async function getNlsSettings(
   session:
     NonNullable<Worksheet['session']>
@@ -641,11 +705,6 @@ async function getNlsSettings(
 }
 
 
-/*
- * Retrieve a row value without depending
- * on Oracle returning a particular case
- * for the column name.
- */
 function getRowValue(
   row:
     Record<string, unknown>,
@@ -678,12 +737,6 @@ function getRowValue(
 }
 
 
-/*
- * Add results to the tab manager.
- *
- * An unpinned active tab is reused.
- * A pinned active tab causes a new tab.
- */
 async function addQueryResult(
   rows:
     Array<Record<string, unknown>>,
@@ -692,7 +745,16 @@ async function addQueryResult(
     ColumnMetadata[],
 
   nlsSettings:
-    NlsSettings
+    NlsSettings,
+
+  resultSet:
+    ResultSet | undefined,
+
+  hasMore:
+    boolean,
+
+  elapsedMs:
+    number
 ): Promise<void> {
 
 
@@ -705,6 +767,11 @@ async function addQueryResult(
     !activeTab.pinned
   ) {
 
+    await closeTabResultSet(
+      activeTab
+    );
+
+
     activeTab.rows =
       rows;
 
@@ -713,6 +780,18 @@ async function addQueryResult(
 
     activeTab.nlsSettings =
       nlsSettings;
+
+    activeTab.resultSet =
+      resultSet;
+
+    activeTab.hasMore =
+      hasMore;
+
+    activeTab.isFetching =
+      false;
+
+    activeTab.elapsedMs =
+      elapsedMs;
 
   } else {
 
@@ -732,7 +811,16 @@ async function addQueryResult(
         pinned:
           false,
 
-        nlsSettings
+        nlsSettings,
+
+        resultSet,
+
+        hasMore,
+
+        isFetching:
+          false,
+
+        elapsedMs
 
       };
 
@@ -762,9 +850,301 @@ async function addQueryResult(
 }
 
 
+async function fetchMoreRows(
+  id:
+    number
+): Promise<void> {
+
+
+  const tab =
+    resultTabs.find(
+      item =>
+        item.id === id
+    );
+
+
+  if (
+    !tab ||
+    tab.isFetching ||
+    !tab.hasMore ||
+    !tab.resultSet
+  ) {
+
+    return;
+
+  }
+
+
+  tab.isFetching =
+    true;
+
+
+  renderResultsView();
+
+
+  const startTime =
+    Date.now();
+
+
+  try {
+
+    await tab.resultSet.next();
+
+
+    const nextRows =
+      tab.resultSet.rows();
+
+
+    tab.rows.push(
+      ...nextRows
+    );
+
+
+    tab.hasMore =
+      await tab.resultSet.hasNext();
+
+
+    tab.elapsedMs +=
+      Date.now() -
+      startTime;
+
+
+    if (
+      !tab.hasMore
+    ) {
+
+      await closeTabResultSet(
+        tab
+      );
+
+    }
+
+  } catch (
+    error
+  ) {
+
+    await closeTabResultSet(
+      tab
+    );
+
+
+    throw error;
+
+  } finally {
+
+    tab.isFetching =
+      false;
+
+
+    renderResultsView();
+
+  }
+
+}
+
+
+async function fetchAllRows(
+  id:
+    number
+): Promise<void> {
+
+
+  const tab =
+    resultTabs.find(
+      item =>
+        item.id === id
+    );
+
+
+  if (
+    !tab ||
+    tab.isFetching ||
+    !tab.hasMore ||
+    !tab.resultSet
+  ) {
+
+    return;
+
+  }
+
+
+  tab.isFetching =
+    true;
+
+
+  renderResultsView();
+
+
+  const startTime =
+    Date.now();
+
+  let pageCount =
+    0;
+
+
+  try {
+
+    while (
+      tab.hasMore &&
+      tab.resultSet
+    ) {
+
+      await tab.resultSet.next();
+
+
+      const nextRows =
+        tab.resultSet.rows();
+
+
+      tab.rows.push(
+        ...nextRows
+      );
+
+
+      tab.hasMore =
+        await tab.resultSet.hasNext();
+
+
+      pageCount++;
+
+
+      /*
+       * Lightweight progress update.
+       *
+       * Do NOT rebuild the entire grid.
+       */
+      if (
+        pageCount % 5 === 0
+      ) {
+
+        await sendFetchProgress(
+          tab
+        );
+
+      }
+
+    }
+
+
+    tab.elapsedMs +=
+      Date.now() -
+      startTime;
+
+
+    if (
+      !tab.hasMore
+    ) {
+
+      await closeTabResultSet(
+        tab
+      );
+
+    }
+
+  } catch (
+    error
+  ) {
+
+    await closeTabResultSet(
+      tab
+    );
+
+
+    throw error;
+
+  } finally {
+
+    tab.isFetching =
+      false;
+
+
+    /*
+     * One full render after all rows
+     * have finished fetching.
+     */
+    renderResultsView();
+
+  }
+
+}
+
+
 /*
- * Return the active results tab.
+ * Send only the current progress values
+ * to the existing webview.
+ *
+ * This avoids rebuilding thousands of
+ * table rows on every progress update.
  */
+async function sendFetchProgress(
+  tab:
+    ResultTab
+): Promise<void> {
+
+
+  if (!resultsView) {
+
+    return;
+
+  }
+
+
+  if (
+    activeResultId !==
+    tab.id
+  ) {
+
+    return;
+
+  }
+
+
+  await resultsView.webview
+    .postMessage({
+
+      command:
+        'fetchProgress',
+
+      id:
+        tab.id,
+
+      rowCount:
+        tab.rows.length,
+
+      elapsedMs:
+        tab.elapsedMs
+
+    });
+
+}
+
+
+async function closeTabResultSet(
+  tab:
+    ResultTab
+): Promise<void> {
+
+
+  const resultSet =
+    tab.resultSet;
+
+
+  tab.resultSet =
+    undefined;
+
+
+  if (!resultSet) {
+
+    return;
+
+  }
+
+
+  await resultSet.close();
+
+}
+
+
 function getActiveResultTab():
   ResultTab | undefined {
 
@@ -789,9 +1169,6 @@ function getActiveResultTab():
 }
 
 
-/*
- * Switch result tabs.
- */
 function selectResultTab(
   id:
     number
@@ -821,9 +1198,6 @@ function selectResultTab(
 }
 
 
-/*
- * Pin or unpin a result tab.
- */
 function toggleResultPin(
   id:
     number
@@ -837,7 +1211,10 @@ function toggleResultPin(
     );
 
 
-  if (!tab) {
+  if (
+    !tab ||
+    tab.isFetching
+  ) {
 
     return;
 
@@ -857,13 +1234,10 @@ function toggleResultPin(
 }
 
 
-/*
- * Close a result tab.
- */
-function closeResultTab(
+async function closeResultTab(
   id:
     number
-): void {
+): Promise<void> {
 
 
   const index =
@@ -883,8 +1257,28 @@ function closeResultTab(
   }
 
 
+  const tab =
+    resultTabs[
+      index
+    ];
+
+
+  if (
+    tab.isFetching
+  ) {
+
+    return;
+
+  }
+
+
   const wasActive =
     activeResultId === id;
+
+
+  await closeTabResultSet(
+    tab
+  );
 
 
   resultTabs.splice(
@@ -927,9 +1321,6 @@ function closeResultTab(
 }
 
 
-/*
- * Render the complete results panel.
- */
 function renderResultsView(): void {
 
 
@@ -946,9 +1337,6 @@ function renderResultsView(): void {
 }
 
 
-/*
- * Build the full webview HTML.
- */
 function buildResultsHtml():
   string {
 
@@ -996,6 +1384,36 @@ function buildResultsHtml():
     buildGridHtml(
       activeTab
     );
+
+
+  const fetchControlsHtml =
+    buildFetchControlsHtml(
+      activeTab
+    );
+
+
+  const fetchStatusHtml =
+    activeTab.isFetching
+
+      ? `
+        <span class="fetching-status">
+
+          <span class="spinner"></span>
+
+          Fetching...
+
+        </span>
+      `
+
+      : `
+        <span>
+          ${
+            activeTab.hasMore
+              ? 'More rows available'
+              : 'All rows fetched'
+          }
+        </span>
+      `;
 
 
   return `
@@ -1213,6 +1631,15 @@ function buildResultsHtml():
   }
 
 
+  button:disabled {
+    opacity:
+      0.5;
+
+    cursor:
+      default;
+  }
+
+
   .status {
     display:
       flex;
@@ -1224,7 +1651,7 @@ function buildResultsHtml():
       14px;
 
     height:
-      30px;
+      32px;
 
     padding:
       0 10px;
@@ -1249,6 +1676,125 @@ function buildResultsHtml():
   }
 
 
+  .spinner {
+    display:
+      inline-block;
+
+    width:
+      12px;
+
+    height:
+      12px;
+
+    border:
+      2px solid
+      var(--vscode-descriptionForeground);
+
+    border-top-color:
+      transparent;
+
+    border-radius:
+      50%;
+
+    animation:
+      spin 0.8s linear infinite;
+  }
+
+
+  .fetching-status {
+    display:
+      inline-flex;
+
+    align-items:
+      center;
+
+    gap:
+      6px;
+  }
+
+
+  @keyframes spin {
+
+    to {
+      transform:
+        rotate(360deg);
+    }
+
+  }
+
+
+  .fetch-controls {
+    display:
+      flex;
+
+    align-items:
+      center;
+
+    gap:
+      6px;
+  }
+
+
+  .fetch-button {
+    border:
+      0;
+
+    border-radius:
+      2px;
+
+    padding:
+      3px 8px;
+
+    color:
+      var(
+        --vscode-button-foreground
+      );
+
+    background:
+      var(
+        --vscode-button-background
+      );
+
+    cursor:
+      pointer;
+
+    font-family:
+      inherit;
+
+    font-size:
+      inherit;
+  }
+
+
+  .fetch-button:hover:not(:disabled) {
+    background:
+      var(
+        --vscode-button-hoverBackground
+      );
+  }
+
+
+  .fetch-button.secondary {
+    color:
+      var(
+        --vscode-button-secondaryForeground
+      );
+
+    background:
+      var(
+        --vscode-button-secondaryBackground
+      );
+  }
+
+
+  .fetch-button.secondary:hover:not(:disabled) {
+    background:
+      var(
+        --vscode-button-secondaryHoverBackground
+      );
+  }
+
+
   .grid-wrap {
     overflow:
       auto;
@@ -1258,7 +1804,7 @@ function buildResultsHtml():
 
     height:
       calc(
-        100vh - 64px
+        100vh - 66px
       );
   }
 
@@ -1355,9 +1901,20 @@ function buildResultsHtml():
 
   <div class="status">
 
-    <span>
+    <span id="row-count">
       ${activeTab.rows.length}
       row${activeTab.rows.length === 1 ? '' : 's'}
+      fetched
+    </span>
+
+    ${fetchStatusHtml}
+
+    ${fetchControlsHtml}
+
+    <span id="elapsed-time">
+      ${formatElapsedTime(
+        activeTab.elapsedMs
+      )}
     </span>
 
     <span>
@@ -1394,6 +1951,10 @@ function buildResultsHtml():
 
   const vscode =
     acquireVsCodeApi();
+
+
+  const activeResultId =
+    ${activeTab.id};
 
 
   function selectTab(
@@ -1443,6 +2004,126 @@ function buildResultsHtml():
 
   }
 
+
+  function fetchMore(
+    id
+  ) {
+
+    vscode.postMessage({
+      command:
+        'fetchMore',
+
+      id
+    });
+
+  }
+
+
+  function fetchAll(
+    id
+  ) {
+
+    vscode.postMessage({
+      command:
+        'fetchAll',
+
+      id
+    });
+
+  }
+
+
+  /*
+   * Receive lightweight progress updates
+   * from the extension without rebuilding
+   * the complete results grid.
+   */
+  window.addEventListener(
+    'message',
+
+    event => {
+
+      const message =
+        event.data;
+
+
+      if (
+        message.command !==
+        'fetchProgress'
+      ) {
+
+        return;
+
+      }
+
+
+      if (
+        message.id !==
+        activeResultId
+      ) {
+
+        return;
+
+      }
+
+
+      const rowCount =
+        document.getElementById(
+          'row-count'
+        );
+
+
+      if (rowCount) {
+
+        rowCount.textContent =
+          message.rowCount +
+          ' rows fetched';
+
+      }
+
+    }
+  );
+
+
+  window.addEventListener(
+    'keydown',
+
+    event => {
+
+      const isFetchAllShortcut =
+        (
+          event.metaKey ||
+          event.ctrlKey
+        ) &&
+        event.key.toLowerCase() ===
+          'a';
+
+
+      if (!isFetchAllShortcut) {
+
+        return;
+
+      }
+
+
+      ${
+        activeTab.hasMore &&
+        !activeTab.isFetching
+          ? `
+            event.preventDefault();
+
+            event.stopPropagation();
+
+            fetchAll(
+              activeResultId
+            );
+          `
+          : ''
+      }
+
+    }
+  );
+
 </script>
 
 </body>
@@ -1453,9 +2134,47 @@ function buildResultsHtml():
 }
 
 
-/*
- * Build one result tab.
- */
+function buildFetchControlsHtml(
+  tab:
+    ResultTab
+): string {
+
+
+  if (
+    !tab.hasMore
+  ) {
+
+    return '';
+
+  }
+
+
+  return `
+<div class="fetch-controls">
+
+  <button
+    class="fetch-button secondary"
+    onclick="fetchMore(${tab.id})"
+    ${tab.isFetching ? 'disabled' : ''}
+  >
+    Fetch More
+  </button>
+
+  <button
+    class="fetch-button"
+    onclick="fetchAll(${tab.id})"
+    ${tab.isFetching ? 'disabled' : ''}
+    title="Fetch all remaining rows (Cmd+A / Ctrl+A)"
+  >
+    Fetch All
+  </button>
+
+</div>
+`;
+
+}
+
+
 function buildTabHtml(
   tab:
     ResultTab,
@@ -1480,6 +2199,7 @@ function buildTabHtml(
     class="tab-pin ${tab.pinned ? 'pinned' : ''}"
     title="${tab.pinned ? 'Unpin result' : 'Pin result'}"
     onclick="togglePin(event, ${tab.id})"
+    ${tab.isFetching ? 'disabled' : ''}
   >
     ${tab.pinned ? '📌' : '○'}
   </button>
@@ -1489,6 +2209,7 @@ function buildTabHtml(
     class="tab-close"
     title="Close result"
     onclick="closeTab(event, ${tab.id})"
+    ${tab.isFetching ? 'disabled' : ''}
   >
     ×
   </button>
@@ -1499,12 +2220,6 @@ function buildTabHtml(
 }
 
 
-/*
- * Build the active result grid.
- *
- * Column order and datatype information
- * come directly from Oracle metadata.
- */
 function buildGridHtml(
   tab:
     ResultTab
@@ -1589,7 +2304,10 @@ function buildGridHtml(
 
 
   return `
-<div class="grid-wrap">
+<div
+  class="grid-wrap"
+  tabindex="0"
+>
 
   <table>
 
@@ -1616,13 +2334,6 @@ function buildGridHtml(
 }
 
 
-/*
- * Return Oracle metadata when available.
- *
- * The fallback exists only as protection
- * in case a future ResultSet does not
- * provide metadata for some reason.
- */
 function getColumns(
   tab:
     ResultTab
@@ -1684,9 +2395,6 @@ function getColumns(
 }
 
 
-/*
- * Initial message.
- */
 function buildWelcomeHtml():
   string {
 
@@ -1755,10 +2463,22 @@ function buildWelcomeHtml():
 }
 
 
-/*
- * Format a database value according
- * to its actual Oracle datatype.
- */
+function formatElapsedTime(
+  elapsedMs:
+    number
+): string {
+
+
+  const seconds =
+    elapsedMs /
+    1000;
+
+
+  return `${seconds.toFixed(2)} sec`;
+
+}
+
+
 function formatCell(
   value:
     unknown,
@@ -1771,10 +2491,6 @@ function formatCell(
 ): string {
 
 
-  /*
-   * The original purpose of this extension:
-   * genuine database NULLs display blank.
-   */
   if (
     value === null ||
     value === undefined
@@ -1791,9 +2507,6 @@ function formatCell(
     ?? '';
 
 
-  /*
-   * Oracle DATE.
-   */
   if (
     dataType ===
     'DATE'
@@ -1832,13 +2545,6 @@ function formatCell(
   }
 
 
-  /*
-   * Oracle TIMESTAMP.
-   *
-   * Using startsWith also gives sensible
-   * behaviour if Oracle exposes a more
-   * specific TIMESTAMP datatype name.
-   */
   if (
     dataType.startsWith(
       'TIMESTAMP'
@@ -1878,11 +2584,6 @@ function formatCell(
   }
 
 
-  /*
-   * Do not interpret VARCHAR2 or other
-   * character values as dates simply
-   * because they happen to look like one.
-   */
   if (
     typeof value ===
     'object'
@@ -1914,9 +2615,6 @@ function formatCell(
 }
 
 
-/*
- * Components of an Oracle DATE/TIMESTAMP.
- */
 interface TemporalParts {
 
   year:
@@ -1943,16 +2641,6 @@ interface TemporalParts {
 }
 
 
-/*
- * Parse the ISO-style temporal strings
- * returned by Oracle SQL Developer.
- *
- * Examples:
- *
- * 2026-09-12T18:30
- * 2026-09-12T18:30:45
- * 2026-09-12T18:30:45.123456
- */
 function parseOracleTemporalString(
   value:
     string
@@ -2014,10 +2702,6 @@ function parseOracleTemporalString(
 }
 
 
-/*
- * Apply the required NLS format to an
- * Oracle-returned temporal string.
- */
 function formatOracleTemporalString(
   value:
     string,
@@ -2048,9 +2732,6 @@ function formatOracleTemporalString(
 }
 
 
-/*
- * Fallback for a genuine JavaScript Date.
- */
 function getPartsFromDate(
   value:
     Date
@@ -2091,37 +2772,6 @@ function getPartsFromDate(
 }
 
 
-/*
- * Apply common Oracle DATE/TIMESTAMP
- * format-model tokens.
- *
- * Supported:
- *
- * YYYY
- * RRRR
- * YY
- * RR
- *
- * MM
- * MON
- *
- * DD
- *
- * HH24
- * HH12
- * HH
- *
- * MI
- * SS
- *
- * FF
- * FF1 through FF9
- *
- * X
- *
- * AM
- * PM
- */
 function formatTemporalParts(
   parts:
     TemporalParts,
@@ -2180,13 +2830,6 @@ function formatTemporalParts(
       : 'PM';
 
 
-  /*
-   * Oracle fractional seconds can have
-   * up to 9 digits.
-   *
-   * Pad to 9 so FF1-FF9 can be honoured
-   * consistently.
-   */
   const fractionalSeconds =
     parts.fractionalSeconds
       .padEnd(
@@ -2199,10 +2842,6 @@ function formatTemporalParts(
       );
 
 
-  /*
-   * Longest tokens appear first so
-   * HH24 is not mistaken for HH, etc.
-   */
   return format.replace(
 
     /HH24|HH12|YYYY|RRRR|FF[1-9]?|MON|MM|DD|MI|SS|AM|PM|RR|YY|HH|X/gi,
@@ -2290,13 +2929,6 @@ function formatTemporalParts(
           return meridiem;
 
 
-        /*
-         * Oracle X represents the
-         * local radix character.
-         *
-         * A decimal point is appropriate
-         * for our current display purpose.
-         */
         case 'X':
 
           return '.';
@@ -2304,22 +2936,12 @@ function formatTemporalParts(
 
         case 'FF':
 
-          /*
-           * Bare FF displays the available
-           * fractional second precision.
-           *
-           * If Oracle returned no fractional
-           * seconds, display zero.
-           */
           return parts.fractionalSeconds
             || '0';
 
 
         default:
 
-          /*
-           * FF1 through FF9.
-           */
           if (
             upperToken.startsWith(
               'FF'
@@ -2363,10 +2985,6 @@ function formatTemporalParts(
 }
 
 
-/*
- * Prevent returned database values from
- * being interpreted as HTML.
- */
 function escapeHtml(
   value:
     string
