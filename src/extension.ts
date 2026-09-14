@@ -3098,6 +3098,41 @@ function buildResultsHtml():
       0;
   }
 
+  .row-number {
+    position:
+      sticky;
+
+    left:
+      0;
+
+    z-index:
+      2;
+
+    min-width:
+      48px;
+
+    width:
+      48px;
+
+    text-align:
+      right;
+
+    color:
+      var(--vscode-descriptionForeground);
+
+    background:
+      var(
+        --vscode-editorGroupHeader-tabsBackground
+      );
+
+    user-select:
+      none;
+  }
+
+  th.row-number {
+    z-index:
+      3;
+  }
 
   .empty {
     padding:
@@ -3458,13 +3493,18 @@ function buildGridHtml(
     );
 
 
-  const headerHtml =
-    columns
-      .map(
-        column =>
-          `<th>${escapeHtml(column.name)}</th>`
-      )
-      .join('');
+const headerHtml =
+  `
+    <th class="row-number">
+      #
+    </th>
+  ` +
+  columns
+    .map(
+      column =>
+        `<th>${escapeHtml(column.name)}</th>`
+    )
+    .join('');
 
 
   const bodyHtml =
@@ -3477,7 +3517,7 @@ function buildGridHtml(
           <td
             class="empty"
             colspan="${Math.max(
-              columns.length,
+              columns.length + 1,
               1
             )}"
           >
@@ -3489,7 +3529,10 @@ function buildGridHtml(
 
       : tab.rows
           .map(
-            row => {
+            (
+              row,
+              rowIndex
+            ) => {
 
               const cells =
                 columns
@@ -3520,7 +3563,13 @@ function buildGridHtml(
 
               return `
                 <tr>
+
+                  <td class="row-number">
+                    ${rowIndex + 1}
+                  </td>
+
                   ${cells}
+
                 </tr>
               `;
 
