@@ -590,13 +590,7 @@ async function executeCleanQuery(
   const startTime =
     Date.now();
 
-
   try {
-
-    console.log(
-      'Oracle Clean Results executing:',
-      sql
-    );
 
 const executableSql =
   removeLeadingComments(
