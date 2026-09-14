@@ -22,11 +22,6 @@ const RESULTS_CONTAINER_ID =
 const PAGE_SIZE =
   500;
 
-const outputChannel =
-  vscode.window.createOutputChannel(
-    'Oracle Clean Results'
-  );
-
 interface NlsSettings {
 
   dateFormat:
@@ -493,35 +488,6 @@ if (
       selectedSql
     );
 
-    outputChannel.appendLine(
-      '--- Selected SQL ---'
-    );
-
-    outputChannel.appendLine(
-      selectedSql
-    );
-
-    outputChannel.appendLine(
-      `Statements found: ${statements.length}`
-    );
-
-    statements.forEach(
-      (statement, index) => {
-
-        outputChannel.appendLine(
-          `--- Statement ${index + 1} ---`
-        );
-
-        outputChannel.appendLine(
-          statement
-        );
-
-      }
-    );
-
-    outputChannel.show();
-
-
   if (
     statements.length ===
     0
@@ -637,16 +603,6 @@ const executableSql =
     sql
   )
     .trim();
-
-    outputChannel.appendLine(
-      '--- About to execute ---'
-    );
-
-    outputChannel.appendLine(
-      executableSql
-    );
-
-    outputChannel.show();
 
     resultSet =
       await session.executeQuery(
@@ -1815,12 +1771,7 @@ async function getNlsSettings(
   let nlsResultSet:
     ResultSet | undefined;
 
-
     try {
-
-      outputChannel.appendLine(
-        '--- Getting NLS settings ---'
-      );
 
       nlsResultSet =
         await session.executeQuery(
