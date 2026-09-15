@@ -2,7 +2,7 @@
   "name": "oracle-clean-results",
   "displayName": "Oracle Clean Results",
   "description": "A lightweight companion to Oracle SQL Developer for VS Code that renders query results with NULL values as blank cells.",
-  "version": "0.0.7",
+  "version": "0.0.10",
   "publisher": "local",
   "engines": {
     "vscode": ">=1.101.0"
