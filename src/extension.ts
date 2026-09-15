@@ -95,9 +95,16 @@ interface WebviewMessage {
     | 'togglePin'
     | 'closeTab'
     | 'fetchMore'
-    | 'fetchAll';
+    | 'fetchAll'
+    | 'requestRows';
 
   id:
+    number;
+
+  start?:
+    number;
+
+  end?:
     number;
 
 }
@@ -234,6 +241,17 @@ async function handleWebviewMessage(
 
         await fetchAllRows(
           message.id
+        );
+
+        break;
+
+
+      case 'requestRows':
+
+        await sendVirtualRows(
+          message.id,
+          message.start ?? 0,
+          message.end ?? 0
         );
 
         break;
@@ -2066,7 +2084,9 @@ async function fetchMoreRows(
     true;
 
 
-  renderResultsView();
+  await sendFetchState(
+    tab
+  );
 
 
   const startTime =
@@ -2123,7 +2143,9 @@ async function fetchMoreRows(
       false;
 
 
-    renderResultsView();
+    await sendFetchState(
+      tab
+    );
 
   }
 
@@ -2159,7 +2181,9 @@ async function fetchAllRows(
     true;
 
 
-  renderResultsView();
+  await sendFetchState(
+    tab
+  );
 
 
   const startTime =
@@ -2241,7 +2265,9 @@ async function fetchAllRows(
       false;
 
 
-    renderResultsView();
+    await sendFetchState(
+      tab
+    );
 
   }
 
@@ -2281,7 +2307,215 @@ async function sendFetchProgress(
         tab.id,
 
       rowCount:
+        tab.rows.length,
+
+      hasMore:
+        tab.hasMore,
+
+      isFetching:
+        tab.isFetching
+
+    });
+
+}
+
+
+async function sendFetchState(
+  tab:
+    ResultTab
+): Promise<void> {
+
+
+  if (!resultsView) {
+
+    return;
+
+  }
+
+
+  if (
+    activeResultId !==
+    tab.id
+  ) {
+
+    return;
+
+  }
+
+
+  await resultsView.webview
+    .postMessage({
+
+      command:
+        'fetchState',
+
+      id:
+        tab.id,
+
+      rowCount:
+        tab.rows.length,
+
+      hasMore:
+        tab.hasMore,
+
+      isFetching:
+        tab.isFetching,
+
+      elapsedText:
+        formatElapsedTime(
+          tab.elapsedMs
+        )
+
+    });
+
+}
+
+
+async function sendVirtualRows(
+  id:
+    number,
+
+  start:
+    number,
+
+  end:
+    number
+): Promise<void> {
+
+
+  if (!resultsView) {
+
+    return;
+
+  }
+
+
+  const tab =
+    resultTabs.find(
+      item =>
+        item.id === id
+    );
+
+
+  if (!tab) {
+
+    return;
+
+  }
+
+
+  const columns =
+    getColumns(
+      tab
+    );
+
+
+  const safeStart =
+    Math.max(
+      0,
+      Math.min(
+        start,
         tab.rows.length
+      )
+    );
+
+
+  const safeEnd =
+    Math.max(
+      safeStart,
+      Math.min(
+        end,
+        tab.rows.length
+      )
+    );
+
+
+  const rowsHtml =
+    tab.rows
+      .slice(
+        safeStart,
+        safeEnd
+      )
+      .map(
+        (
+          row,
+          sliceIndex
+        ) => {
+
+          const rowIndex =
+            safeStart +
+            sliceIndex;
+
+
+          const cells =
+            columns
+              .map(
+                column => {
+
+                  const value =
+                    getRowValue(
+                      row,
+                      column.name
+                    );
+
+
+                  return `
+                    <td>
+                      ${formatCell(
+                        value,
+                        column,
+                        tab.nlsSettings
+                      )}
+                    </td>
+                  `;
+
+                }
+              )
+              .join('');
+
+
+          return `
+            <tr class="virtual-data-row">
+
+              <td class="row-number">
+                ${rowIndex + 1}
+              </td>
+
+              ${cells}
+
+            </tr>
+          `;
+
+        }
+      )
+      .join('');
+
+
+  await resultsView.webview
+    .postMessage({
+
+      command:
+        'virtualRows',
+
+      id:
+        tab.id,
+
+      start:
+        safeStart,
+
+      end:
+        safeEnd,
+
+      totalRows:
+        tab.rows.length,
+
+      columnCount:
+        Math.max(
+          columns.length + 1,
+          1
+        ),
+
+      rowsHtml
 
     });
 
@@ -2568,7 +2802,7 @@ function buildResultsHtml():
     activeTab.isFetching
 
       ? `
-        <span class="fetching-status">
+        <span class="fetching-status" id="fetch-status">
 
           <span class="spinner"></span>
 
@@ -2578,7 +2812,7 @@ function buildResultsHtml():
       `
 
       : `
-        <span>
+        <span id="fetch-status">
           ${
             activeTab.hasMore
               ? 'More rows available'
@@ -2985,6 +3219,9 @@ function buildResultsHtml():
     border-collapse:
       collapse;
 
+    table-layout:
+      fixed;
+
     width:
       max-content;
 
@@ -3008,6 +3245,12 @@ function buildResultsHtml():
 
     white-space:
       nowrap;
+
+    overflow:
+      hidden;
+
+    text-overflow:
+      ellipsis;
 
     text-align:
       left;
@@ -3079,6 +3322,24 @@ function buildResultsHtml():
       3;
   }
 
+
+  .virtual-data-row {
+    height:
+      27px;
+  }
+
+
+  .virtual-spacer td {
+    height:
+      0;
+
+    padding:
+      0;
+
+    border:
+      0;
+  }
+
   .empty {
     padding:
       20px;
@@ -3118,7 +3379,7 @@ function buildResultsHtml():
 
     ${fetchControlsHtml}
 
-    <span>
+    <span id="elapsed-time">
       ${formatElapsedTime(
         activeTab.elapsedMs
       )}
@@ -3240,6 +3501,409 @@ function buildResultsHtml():
   }
 
 
+  const VIRTUAL_ROW_HEIGHT =
+    27;
+
+  const VIRTUAL_BUFFER_ROWS =
+    20;
+
+  let requestedStart =
+    -1;
+
+  let requestedEnd =
+    -1;
+
+  let hasMoreRows =
+    ${activeTab.hasMore};
+
+  let isFetchingRows =
+    ${activeTab.isFetching};
+
+  let automaticFetchRequested =
+    false;
+
+  const AUTO_FETCH_THRESHOLD_ROWS =
+    50;
+
+
+  function maybeFetchMore(
+    grid,
+    totalRows,
+    firstVisible,
+    visibleCount
+  ) {
+
+    if (
+      !hasMoreRows ||
+      isFetchingRows ||
+      automaticFetchRequested
+    ) {
+
+      return;
+
+    }
+
+
+    const lastVisible =
+      firstVisible +
+      visibleCount;
+
+
+    if (
+      lastVisible <
+      totalRows -
+      AUTO_FETCH_THRESHOLD_ROWS
+    ) {
+
+      return;
+
+    }
+
+
+    automaticFetchRequested =
+      true;
+
+
+    fetchMore(
+      activeResultId
+    );
+
+  }
+
+
+  function requestVisibleRows() {
+
+    const grid =
+      document.getElementById(
+        'grid-wrap'
+      );
+
+
+    if (!grid) {
+
+      return;
+
+    }
+
+
+    const totalRows =
+      Number(
+        grid.dataset.totalRows ??
+        '0'
+      );
+
+
+    if (
+      totalRows ===
+      0
+    ) {
+
+      return;
+
+    }
+
+
+    const firstVisible =
+      Math.max(
+        0,
+        Math.floor(
+          grid.scrollTop /
+          VIRTUAL_ROW_HEIGHT
+        )
+      );
+
+
+    const visibleCount =
+      Math.ceil(
+        grid.clientHeight /
+        VIRTUAL_ROW_HEIGHT
+      );
+
+
+    maybeFetchMore(
+      grid,
+      totalRows,
+      firstVisible,
+      visibleCount
+    );
+
+
+    const start =
+      Math.max(
+        0,
+        firstVisible -
+        VIRTUAL_BUFFER_ROWS
+      );
+
+
+    const end =
+      Math.min(
+        totalRows,
+        firstVisible +
+        visibleCount +
+        VIRTUAL_BUFFER_ROWS
+      );
+
+
+    if (
+      start === requestedStart &&
+      end === requestedEnd
+    ) {
+
+      return;
+
+    }
+
+
+    requestedStart =
+      start;
+
+    requestedEnd =
+      end;
+
+
+    vscode.postMessage({
+      command:
+        'requestRows',
+
+      id:
+        activeResultId,
+
+      start,
+
+      end
+    });
+
+  }
+
+
+  function renderVirtualRows(
+    message
+  ) {
+
+    const grid =
+      document.getElementById(
+        'grid-wrap'
+      );
+
+    const body =
+      document.getElementById(
+        'virtual-body'
+      );
+
+
+    if (
+      !grid ||
+      !body
+    ) {
+
+      return;
+
+    }
+
+
+    grid.dataset.totalRows =
+      String(
+        message.totalRows
+      );
+
+
+    const topHeight =
+      message.start *
+      VIRTUAL_ROW_HEIGHT;
+
+    const bottomHeight =
+      Math.max(
+        0,
+        (
+          message.totalRows -
+          message.end
+        ) *
+        VIRTUAL_ROW_HEIGHT
+      );
+
+
+    body.innerHTML =
+      '<tr class="virtual-spacer">' +
+      '<td colspan="' +
+      message.columnCount +
+      '" style="height: ' +
+      topHeight +
+      'px"></td></tr>' +
+      message.rowsHtml +
+      '<tr class="virtual-spacer">' +
+      '<td colspan="' +
+      message.columnCount +
+      '" style="height: ' +
+      bottomHeight +
+      'px"></td></tr>';
+
+  }
+
+
+  const gridWrap =
+    document.getElementById(
+      'grid-wrap'
+    );
+
+
+  if (gridWrap) {
+
+    gridWrap.addEventListener(
+      'scroll',
+      requestVisibleRows,
+      {
+        passive:
+          true
+      }
+    );
+
+
+    window.addEventListener(
+      'resize',
+      requestVisibleRows
+    );
+
+
+    requestVisibleRows();
+
+  }
+
+
+  function updateFetchUi(
+    message
+  ) {
+
+    const grid =
+      document.getElementById(
+        'grid-wrap'
+      );
+
+    const rowCount =
+      document.getElementById(
+        'row-count'
+      );
+
+    const fetchStatus =
+      document.getElementById(
+        'fetch-status'
+      );
+
+    const fetchMoreButton =
+      document.getElementById(
+        'fetch-more-button'
+      );
+
+    const fetchAllButton =
+      document.getElementById(
+        'fetch-all-button'
+      );
+
+    const elapsedTime =
+      document.getElementById(
+        'elapsed-time'
+      );
+
+
+    hasMoreRows =
+      Boolean(
+        message.hasMore
+      );
+
+    isFetchingRows =
+      Boolean(
+        message.isFetching
+      );
+
+
+    if (
+      !isFetchingRows
+    ) {
+
+      automaticFetchRequested =
+        false;
+
+    }
+
+
+    if (grid) {
+
+      grid.dataset.totalRows =
+        String(
+          message.rowCount
+        );
+
+    }
+
+
+    if (rowCount) {
+
+      rowCount.textContent =
+        message.rowCount +
+        ' row' +
+        (message.rowCount === 1 ? '' : 's') +
+        ' fetched';
+
+    }
+
+
+    if (fetchStatus) {
+
+      fetchStatus.innerHTML =
+        isFetchingRows
+          ? '<span class="spinner"></span> Fetching...'
+          : hasMoreRows
+            ? 'More rows available'
+            : 'All rows fetched';
+
+    }
+
+
+    if (fetchMoreButton) {
+
+      fetchMoreButton.disabled =
+        isFetchingRows;
+
+      fetchMoreButton.style.display =
+        hasMoreRows ? '' : 'none';
+
+    }
+
+
+    if (fetchAllButton) {
+
+      fetchAllButton.disabled =
+        isFetchingRows;
+
+      fetchAllButton.style.display =
+        hasMoreRows ? '' : 'none';
+
+    }
+
+
+    if (
+      elapsedTime &&
+      message.elapsedText
+    ) {
+
+      elapsedTime.textContent =
+        message.elapsedText;
+
+    }
+
+
+    requestedStart =
+      -1;
+
+    requestedEnd =
+      -1;
+
+
+    requestVisibleRows();
+
+  }
+
+
   window.addEventListener(
     'message',
 
@@ -3247,16 +3911,6 @@ function buildResultsHtml():
 
       const message =
         event.data;
-
-
-      if (
-        message.command !==
-        'fetchProgress'
-      ) {
-
-        return;
-
-      }
 
 
       if (
@@ -3269,19 +3923,53 @@ function buildResultsHtml():
       }
 
 
-      const rowCount =
-        document.getElementById(
-          'row-count'
-        );
+      if (
+        message.command ===
+        'fetchProgress'
+      ) {
+
+        const rowCount =
+          document.getElementById(
+            'row-count'
+          );
+
+
+        if (rowCount) {
+
+          rowCount.textContent =
+            message.rowCount +
+            ' rows fetched';
+
+        }
+
+
+        return;
+
+      }
 
 
       if (
-        rowCount
+        message.command ===
+        'fetchState'
       ) {
 
-        rowCount.textContent =
-          message.rowCount +
-          ' rows fetched';
+        updateFetchUi(
+          message
+        );
+
+        return;
+
+      }
+
+
+      if (
+        message.command ===
+        'virtualRows'
+      ) {
+
+        renderVirtualRows(
+          message
+        );
 
       }
 
@@ -3356,10 +4044,11 @@ function buildFetchControlsHtml(
 
 
   return `
-<div class="fetch-controls">
+<div class="fetch-controls" id="fetch-controls">
 
   <button
     class="fetch-button secondary"
+    id="fetch-more-button"
     onclick="fetchMore(${tab.id})"
     ${tab.isFetching ? 'disabled' : ''}
   >
@@ -3368,6 +4057,7 @@ function buildFetchControlsHtml(
 
   <button
     class="fetch-button"
+    id="fetch-all-button"
     onclick="fetchAll(${tab.id})"
     ${tab.isFetching ? 'disabled' : ''}
     title="Fetch all remaining rows (Cmd+A / Ctrl+A)"
@@ -3438,98 +4128,69 @@ function buildGridHtml(
     );
 
 
-const headerHtml =
-  `
-    <th class="row-number">
-      #
-    </th>
-  ` +
-  columns
-    .map(
-      column =>
-        `<th>${escapeHtml(column.name)}</th>`
-    )
-    .join('');
+  const columnWidths =
+    getInitialColumnWidths(
+      tab,
+      columns
+    );
 
 
-  const bodyHtml =
-    tab.rows.length ===
+  const colgroupHtml =
+    `
+      <colgroup>
+        <col style="width: 48px">
+        ${
+          columnWidths
+            .map(
+              width =>
+                `<col style="width: ${width}px">`
+            )
+            .join('')
+        }
+      </colgroup>
+    `;
+
+
+  const tableWidth =
+    48 +
+    columnWidths.reduce(
+      (
+        total,
+        width
+      ) =>
+        total + width,
       0
-
-      ? `
-        <tr>
-
-          <td
-            class="empty"
-            colspan="${Math.max(
-              columns.length + 1,
-              1
-            )}"
-          >
-            No rows returned
-          </td>
-
-        </tr>
-      `
-
-      : tab.rows
-          .map(
-            (
-              row,
-              rowIndex
-            ) => {
-
-              const cells =
-                columns
-                  .map(
-                    column => {
-
-                      const value =
-                        getRowValue(
-                          row,
-                          column.name
-                        );
+    );
 
 
-                      return `
-                        <td>
-                          ${formatCell(
-                            value,
-                            column,
-                            tab.nlsSettings
-                          )}
-                        </td>
-                      `;
-
-                    }
-                  )
-                  .join('');
-
-
-              return `
-                <tr>
-
-                  <td class="row-number">
-                    ${rowIndex + 1}
-                  </td>
-
-                  ${cells}
-
-                </tr>
-              `;
-
-            }
-          )
-          .join('');
+  const headerHtml =
+    `
+      <th class="row-number">
+        #
+      </th>
+    ` +
+    columns
+      .map(
+        column =>
+          `<th>${escapeHtml(column.name)}</th>`
+      )
+      .join('');
 
 
-  return `
+  if (
+    tab.rows.length ===
+    0
+  ) {
+
+    return `
 <div
   class="grid-wrap"
   tabindex="0"
 >
 
-  <table>
+  <table style="width: ${Math.max(tableWidth, 48)}px">
+
+    ${colgroupHtml}
 
     <thead>
 
@@ -3539,11 +4200,53 @@ const headerHtml =
 
     </thead>
 
-
     <tbody>
 
-      ${bodyHtml}
+      <tr>
 
+        <td
+          class="empty"
+          colspan="${Math.max(
+            columns.length + 1,
+            1
+          )}"
+        >
+          No rows returned
+        </td>
+
+      </tr>
+
+    </tbody>
+
+  </table>
+
+</div>
+`;
+
+  }
+
+
+  return `
+<div
+  class="grid-wrap"
+  id="grid-wrap"
+  tabindex="0"
+  data-total-rows="${tab.rows.length}"
+>
+
+  <table style="width: ${Math.max(tableWidth, 48)}px">
+
+    ${colgroupHtml}
+
+    <thead>
+
+      <tr>
+        ${headerHtml}
+      </tr>
+
+    </thead>
+
+    <tbody id="virtual-body">
     </tbody>
 
   </table>
@@ -3553,6 +4256,135 @@ const headerHtml =
 
 }
 
+
+function getInitialColumnWidths(
+  tab:
+    ResultTab,
+
+  columns:
+    ColumnMetadata[]
+): number[] {
+
+
+  const MIN_COLUMN_WIDTH =
+    90;
+
+  const MAX_COLUMN_WIDTH =
+    420;
+
+  const APPROX_CHARACTER_WIDTH =
+    8;
+
+  const CELL_HORIZONTAL_PADDING =
+    24;
+
+  const sampleRows =
+    tab.rows.slice(
+      0,
+      PAGE_SIZE
+    );
+
+
+  return columns.map(
+    column => {
+
+      let maxLength =
+        column.name.length;
+
+
+      for (
+        const row of sampleRows
+      ) {
+
+        const value =
+          getRowValue(
+            row,
+            column.name
+          );
+
+
+        const displayLength =
+          getDisplayLengthForWidth(
+            value,
+            column,
+            tab.nlsSettings
+          );
+
+
+        if (
+          displayLength >
+          maxLength
+        ) {
+
+          maxLength =
+            displayLength;
+
+        }
+
+      }
+
+
+      return Math.max(
+        MIN_COLUMN_WIDTH,
+        Math.min(
+          MAX_COLUMN_WIDTH,
+          maxLength *
+            APPROX_CHARACTER_WIDTH +
+            CELL_HORIZONTAL_PADDING
+        )
+      );
+
+    }
+  );
+
+}
+
+
+function getDisplayLengthForWidth(
+  value:
+    unknown,
+
+  column:
+    ColumnMetadata,
+
+  nlsSettings:
+    NlsSettings
+): number {
+
+
+  if (
+    value === null ||
+    value === undefined
+  ) {
+
+    return 0;
+
+  }
+
+
+  const formatted =
+    formatCell(
+      value,
+      column,
+      nlsSettings
+    );
+
+
+  const plainText =
+    formatted
+      .replace(
+        /<[^>]*>/g,
+        ''
+      )
+      .replace(
+        /&(?:amp|lt|gt|quot|#39);/g,
+        'x'
+      );
+
+
+  return plainText.length;
+
+}
 
 function getColumns(
   tab:
