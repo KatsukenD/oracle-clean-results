@@ -53,6 +53,22 @@ interface ColumnMetadata {
 }
 
 
+type SortDirection =
+  'asc' |
+  'desc';
+
+
+interface SortState {
+
+  columnIndex:
+    number;
+
+  direction:
+    SortDirection;
+
+}
+
+
 interface ResultTab {
 
   id:
@@ -88,6 +104,12 @@ interface ResultTab {
   columnWidths:
     number[];
 
+  sortState?:
+    SortState;
+
+  displayRowsCache?:
+    Array<Record<string, unknown>>;
+
 }
 
 
@@ -101,7 +123,8 @@ interface WebviewMessage {
     | 'fetchAll'
     | 'requestRows'
     | 'resizeColumn'
-    | 'autoFitColumn';
+    | 'autoFitColumn'
+    | 'sortColumn';
 
   id:
     number;
@@ -282,6 +305,16 @@ async function handleWebviewMessage(
       case 'autoFitColumn':
 
         await autoFitResultColumn(
+          message.id,
+          message.columnIndex ?? -1
+        );
+
+        break;
+
+
+      case 'sortColumn':
+
+        await sortResultColumn(
           message.id,
           message.columnIndex ?? -1
         );
@@ -2037,6 +2070,12 @@ async function addQueryResult(
         nlsSettings
       );
 
+    activeTab.sortState =
+      undefined;
+
+    activeTab.displayRowsCache =
+      undefined;
+
   } else {
 
     const newTab:
@@ -2153,7 +2192,12 @@ async function fetchMoreRows(
     );
 
 
-    tab.hasMore =
+    
+    invalidateDisplayRows(
+      tab
+    );
+
+tab.hasMore =
       await tab.resultSet.hasNext();
 
 
@@ -2258,7 +2302,12 @@ async function fetchAllRows(
       );
 
 
-      tab.hasMore =
+      
+    invalidateDisplayRows(
+      tab
+    );
+
+tab.hasMore =
         await tab.resultSet.hasNext();
 
 
@@ -2456,12 +2505,25 @@ async function sendVirtualRows(
     );
 
 
+  /*
+   * v0.0.11 display pipeline.
+   *
+   * tab.rows always remains the fetched/source
+   * dataset. Sorting changes display order only.
+   * v0.0.12 filtering can plug in before sorting.
+   */
+  const displayRows =
+    getDisplayRows(
+      tab
+    );
+
+
   const safeStart =
     Math.max(
       0,
       Math.min(
         start,
-        tab.rows.length
+        displayRows.length
       )
     );
 
@@ -2471,13 +2533,13 @@ async function sendVirtualRows(
       safeStart,
       Math.min(
         end,
-        tab.rows.length
+        displayRows.length
       )
     );
 
 
   const rowsHtml =
-    tab.rows
+    displayRows
       .slice(
         safeStart,
         safeEnd
@@ -2553,7 +2615,7 @@ async function sendVirtualRows(
         safeEnd,
 
       totalRows:
-        tab.rows.length,
+        displayRows.length,
 
       columnCount:
         Math.max(
@@ -2564,6 +2626,458 @@ async function sendVirtualRows(
       rowsHtml
 
     });
+
+}
+
+
+function invalidateDisplayRows(
+  tab:
+    ResultTab
+): void {
+
+
+  tab.displayRowsCache =
+    undefined;
+
+}
+
+
+function getDisplayRows(
+  tab:
+    ResultTab
+): Array<Record<string, unknown>> {
+
+
+  const sortState =
+    tab.sortState;
+
+
+  if (!sortState) {
+
+    return tab.rows;
+
+  }
+
+
+  /*
+   * Cache the sorted display order so virtual
+   * scrolling does not re-sort the entire fetched
+   * result set for every requested row window.
+   */
+  if (
+    tab.displayRowsCache
+  ) {
+
+    return tab.displayRowsCache;
+
+  }
+
+
+  const columns =
+    getColumns(
+      tab
+    );
+
+  const column =
+    columns[
+      sortState.columnIndex
+    ];
+
+
+  if (!column) {
+
+    return tab.rows;
+
+  }
+
+
+  const sortedRows =
+    tab.rows
+      .map(
+        (
+          row,
+          originalIndex
+        ) => ({
+          row,
+          originalIndex
+        })
+      )
+      .sort(
+        (
+          left,
+          right
+        ) => {
+
+          const leftValue =
+            getRowValue(
+              left.row,
+              column.name
+            );
+
+          const rightValue =
+            getRowValue(
+              right.row,
+              column.name
+            );
+
+          const comparison =
+            compareSortValues(
+              leftValue,
+              rightValue,
+              column
+            );
+
+
+          if (
+            comparison !== 0
+          ) {
+
+            const hasBlank =
+              leftValue === null ||
+              leftValue === undefined ||
+              rightValue === null ||
+              rightValue === undefined;
+
+
+            return hasBlank
+              ? comparison
+              : sortState.direction ===
+                  'asc'
+                ? comparison
+                : -comparison;
+
+          }
+
+
+          return left.originalIndex -
+            right.originalIndex;
+
+        }
+      )
+      .map(
+        item =>
+          item.row
+      );
+
+
+  tab.displayRowsCache =
+    sortedRows;
+
+
+  return sortedRows;
+
+}
+
+function compareSortValues(
+  left:
+    unknown,
+
+  right:
+    unknown,
+
+  column:
+    ColumnMetadata
+): number {
+
+
+  const leftBlank =
+    left === null ||
+    left === undefined;
+
+  const rightBlank =
+    right === null ||
+    right === undefined;
+
+
+  if (
+    leftBlank &&
+    rightBlank
+  ) {
+
+    return 0;
+
+  }
+
+
+  /*
+   * NULLs are always placed last. The direction
+   * is applied to non-NULL values below.
+   */
+  if (leftBlank) {
+
+    return 1;
+
+  }
+
+  if (rightBlank) {
+
+    return -1;
+
+  }
+
+
+  const dataType =
+    column.dataType
+      ?.toUpperCase()
+    ?? '';
+
+
+  if (
+    isNumericDataType(
+      dataType
+    )
+  ) {
+
+    const leftNumber =
+      Number(left);
+
+    const rightNumber =
+      Number(right);
+
+
+    if (
+      Number.isFinite(leftNumber) &&
+      Number.isFinite(rightNumber)
+    ) {
+
+      return leftNumber -
+        rightNumber;
+
+    }
+
+  }
+
+
+  if (
+    dataType === 'DATE' ||
+    dataType.startsWith(
+      'TIMESTAMP'
+    )
+  ) {
+
+    const leftTime =
+      getSortableTemporalValue(
+        left
+      );
+
+    const rightTime =
+      getSortableTemporalValue(
+        right
+      );
+
+
+    if (
+      leftTime !== undefined &&
+      rightTime !== undefined
+    ) {
+
+      return leftTime -
+        rightTime;
+
+    }
+
+  }
+
+
+  return String(left)
+    .localeCompare(
+      String(right),
+      undefined,
+      {
+        numeric: true,
+        sensitivity:
+          'base'
+      }
+    );
+
+}
+
+
+function isNumericDataType(
+  dataType:
+    string
+): boolean {
+
+
+  return (
+    dataType === 'NUMBER' ||
+    dataType === 'FLOAT' ||
+    dataType === 'BINARY_FLOAT' ||
+    dataType === 'BINARY_DOUBLE' ||
+    dataType === 'INTEGER' ||
+    dataType === 'DECIMAL' ||
+    dataType.startsWith(
+      'NUMBER('
+    )
+  );
+
+}
+
+
+function getSortableTemporalValue(
+  value:
+    unknown
+): number | undefined {
+
+
+  if (
+    value instanceof Date
+  ) {
+
+    return value.getTime();
+
+  }
+
+
+  if (
+    typeof value !==
+    'string'
+  ) {
+
+    return undefined;
+
+  }
+
+
+  const parts =
+    parseOracleTemporalString(
+      value
+    );
+
+
+  if (!parts) {
+
+    return undefined;
+
+  }
+
+
+  return Date.UTC(
+    parts.year,
+    parts.month - 1,
+    parts.day,
+    parts.hours,
+    parts.minutes,
+    parts.seconds,
+    Number(
+      (
+        parts.fractionalSeconds +
+        '000'
+      ).substring(
+        0,
+        3
+      )
+    )
+  );
+
+}
+
+
+async function sortResultColumn(
+  id:
+    number,
+
+  columnIndex:
+    number
+): Promise<void> {
+
+
+  const tab =
+    resultTabs.find(
+      item =>
+        item.id === id
+    );
+
+
+  if (!tab) {
+
+    return;
+
+  }
+
+
+  const columns =
+    getColumns(
+      tab
+    );
+
+
+  if (
+    columnIndex < 0 ||
+    columnIndex >= columns.length
+  ) {
+
+    return;
+
+  }
+
+
+  /*
+   * Three-state cycle:
+   * unsorted -> ascending -> descending -> unsorted.
+   */
+  if (
+    !tab.sortState ||
+    tab.sortState.columnIndex !==
+      columnIndex
+  ) {
+
+    tab.sortState = {
+      columnIndex,
+      direction:
+        'asc'
+    };
+
+  } else if (
+    tab.sortState.direction ===
+    'asc'
+  ) {
+
+    tab.sortState = {
+      columnIndex,
+      direction:
+        'desc'
+    };
+
+  } else {
+
+    tab.sortState =
+      undefined;
+
+  }
+
+
+  invalidateDisplayRows(
+    tab
+  );
+
+
+  if (
+    resultsView &&
+    activeResultId === id
+  ) {
+
+    await resultsView.webview
+      .postMessage({
+
+        command:
+          'sortState',
+
+        id,
+
+        columnIndex:
+          tab.sortState
+            ?.columnIndex ??
+          -1,
+
+        direction:
+          tab.sortState
+            ?.direction ??
+          ''
+
+      });
+
+  }
 
 }
 
@@ -3430,6 +3944,41 @@ function buildResultsHtml():
   }
 
 
+  .column-header {
+    cursor:
+      pointer;
+  }
+
+
+  .column-header:hover {
+    background:
+      var(
+        --vscode-list-hoverBackground
+      );
+  }
+
+
+  .sort-indicator {
+    display:
+      inline-block;
+
+    min-width:
+      14px;
+
+    margin-left:
+      6px;
+
+    color:
+      var(--vscode-descriptionForeground);
+
+    font-size:
+      10px;
+
+    vertical-align:
+      middle;
+  }
+
+
   .column-resizer {
     position:
       absolute;
@@ -3686,6 +4235,37 @@ function buildResultsHtml():
         'fetchAll',
 
       id
+    });
+
+  }
+
+
+  function sortColumn(
+    event,
+    columnIndex
+  ) {
+
+    if (
+      event.target &&
+      event.target.classList &&
+      event.target.classList.contains(
+        'column-resizer'
+      )
+    ) {
+
+      return;
+
+    }
+
+
+    vscode.postMessage({
+      command:
+        'sortColumn',
+
+      id:
+        activeResultId,
+
+      columnIndex
     });
 
   }
@@ -4437,6 +5017,81 @@ function buildResultsHtml():
 
       if (
         message.command ===
+        'sortState'
+      ) {
+
+        document
+          .querySelectorAll(
+            '.column-header'
+          )
+          .forEach(
+            header => {
+
+              const indicator =
+                header.querySelector(
+                  '.sort-indicator'
+                );
+
+              if (!indicator) {
+
+                return;
+
+              }
+
+
+              const headerIndex =
+                Number(
+                  header.dataset.columnIndex
+                );
+
+
+              if (
+                headerIndex !==
+                message.columnIndex
+              ) {
+
+                indicator.textContent =
+                  '';
+
+                return;
+
+              }
+
+
+              indicator.textContent =
+                message.direction ===
+                  'asc'
+                  ? '▲'
+                  : message.direction ===
+                      'desc'
+                    ? '▼'
+                    : '';
+
+            }
+          );
+
+
+        /*
+         * Sorting changes display order but not
+         * row count or fetched data. Keep the
+         * current scroll position and request the
+         * virtual window again in the new order.
+         */
+        requestedStart =
+          -1;
+
+        requestedEnd =
+          -1;
+
+        requestVisibleRows();
+
+        return;
+
+      }
+
+
+      if (
+        message.command ===
         'columnWidth'
       ) {
 
@@ -4604,6 +5259,34 @@ function buildTabHtml(
 }
 
 
+function getSortIndicatorHtml(
+  tab:
+    ResultTab,
+
+  columnIndex:
+    number
+): string {
+
+
+  if (
+    !tab.sortState ||
+    tab.sortState.columnIndex !==
+      columnIndex
+  ) {
+
+    return '';
+
+  }
+
+
+  return tab.sortState.direction ===
+    'asc'
+    ? '&#9650;'
+    : '&#9660;';
+
+}
+
+
 function buildGridHtml(
   tab:
     ResultTab
@@ -4676,7 +5359,7 @@ function buildGridHtml(
           column,
           columnIndex
         ) =>
-          `<th class="column-header">${escapeHtml(column.name)}<span class="column-resizer" onmousedown="startColumnResize(event, ${columnIndex})" ondblclick="autoFitColumn(event, ${columnIndex})"></span></th>`
+          `<th class="column-header" data-column-index="${columnIndex}" onclick="sortColumn(event, ${columnIndex})" title="Click to sort">${escapeHtml(column.name)}<span class="sort-indicator">${getSortIndicatorHtml(tab, columnIndex)}</span><span class="column-resizer" onmousedown="startColumnResize(event, ${columnIndex})" ondblclick="autoFitColumn(event, ${columnIndex})"></span></th>`
       )
       .join('');
 
