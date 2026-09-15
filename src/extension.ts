@@ -85,6 +85,9 @@ interface ResultTab {
   elapsedMs:
     number;
 
+  columnWidths:
+    number[];
+
 }
 
 
@@ -96,7 +99,9 @@ interface WebviewMessage {
     | 'closeTab'
     | 'fetchMore'
     | 'fetchAll'
-    | 'requestRows';
+    | 'requestRows'
+    | 'resizeColumn'
+    | 'autoFitColumn';
 
   id:
     number;
@@ -105,6 +110,12 @@ interface WebviewMessage {
     number;
 
   end?:
+    number;
+
+  columnIndex?:
+    number;
+
+  width?:
     number;
 
 }
@@ -252,6 +263,27 @@ async function handleWebviewMessage(
           message.id,
           message.start ?? 0,
           message.end ?? 0
+        );
+
+        break;
+
+
+      case 'resizeColumn':
+
+        resizeResultColumn(
+          message.id,
+          message.columnIndex ?? -1,
+          message.width ?? 0
+        );
+
+        break;
+
+
+      case 'autoFitColumn':
+
+        await autoFitResultColumn(
+          message.id,
+          message.columnIndex ?? -1
         );
 
         break;
@@ -1998,6 +2030,13 @@ async function addQueryResult(
     activeTab.elapsedMs =
       elapsedMs;
 
+    activeTab.columnWidths =
+      calculateColumnWidths(
+        rows,
+        metadata,
+        nlsSettings
+      );
+
   } else {
 
     const newTab:
@@ -2025,7 +2064,14 @@ async function addQueryResult(
         isFetching:
           false,
 
-        elapsedMs
+        elapsedMs,
+
+        columnWidths:
+          calculateColumnWidths(
+            rows,
+            metadata,
+            nlsSettings
+          )
 
       };
 
@@ -2519,6 +2565,92 @@ async function sendVirtualRows(
 
     });
 
+}
+
+
+function resizeResultColumn(
+  id:
+    number,
+
+  columnIndex:
+    number,
+
+  width:
+    number
+): void {
+
+  const tab =
+    resultTabs.find(
+      item =>
+        item.id === id
+    );
+
+  if (
+    !tab ||
+    columnIndex < 0 ||
+    columnIndex >= tab.columnWidths.length
+  ) {
+    return;
+  }
+
+  tab.columnWidths[columnIndex] =
+    Math.max(
+      60,
+      Math.round(width)
+    );
+}
+
+
+async function autoFitResultColumn(
+  id:
+    number,
+
+  columnIndex:
+    number
+): Promise<void> {
+
+  const tab =
+    resultTabs.find(
+      item =>
+        item.id === id
+    );
+
+  if (!tab) {
+    return;
+  }
+
+  const columns =
+    getColumns(tab);
+
+  if (
+    columnIndex < 0 ||
+    columnIndex >= columns.length
+  ) {
+    return;
+  }
+
+  const width =
+    calculateColumnWidth(
+      tab.rows,
+      columns[columnIndex],
+      tab.nlsSettings
+    );
+
+  tab.columnWidths[columnIndex] =
+    width;
+
+  if (
+    resultsView &&
+    activeResultId === id
+  ) {
+    await resultsView.webview.postMessage({
+      command:
+        'columnWidth',
+      id,
+      columnIndex,
+      width
+    });
+  }
 }
 
 
@@ -3286,6 +3418,61 @@ function buildResultsHtml():
       0;
   }
 
+  .column-header {
+    position:
+      sticky;
+
+    top:
+      0;
+
+    z-index:
+      1;
+  }
+
+
+  .column-resizer {
+    position:
+      absolute;
+
+    top:
+      0;
+
+    right:
+      -3px;
+
+    width:
+      7px;
+
+    height:
+      100%;
+
+    cursor:
+      col-resize;
+
+    z-index:
+      4;
+
+    user-select:
+      none;
+  }
+
+
+  .column-resizer:hover {
+    border-right:
+      1px solid
+      var(--vscode-focusBorder);
+  }
+
+
+  body.column-resizing,
+  body.column-resizing * {
+    cursor:
+      col-resize !important;
+
+    user-select:
+      none !important;
+  }
+
   .row-number {
     position:
       sticky;
@@ -3299,11 +3486,14 @@ function buildResultsHtml():
     min-width:
       48px;
 
-    width:
-      48px;
-
     text-align:
       right;
+
+    overflow:
+      visible;
+
+    text-overflow:
+      clip;
 
     color:
       var(--vscode-descriptionForeground);
@@ -3499,6 +3689,279 @@ function buildResultsHtml():
     });
 
   }
+
+
+  const MIN_RESIZABLE_COLUMN_WIDTH =
+    60;
+
+  let activeResize =
+    undefined;
+
+
+  function getResultTable() {
+    return document.getElementById(
+      'result-table'
+    );
+  }
+
+
+  function calculateRowNumberWidth(
+    rowCount
+  ) {
+    const digits =
+      Math.max(
+        1,
+        String(
+          Math.max(
+            1,
+            rowCount
+          )
+        ).length
+      );
+
+    return Math.max(
+      48,
+      (digits * 8) + 24
+    );
+  }
+
+
+  function ensureRowNumberWidth(
+    rowCount
+  ) {
+    const table =
+      getResultTable();
+
+    const col =
+      document.getElementById(
+        'row-number-col'
+      );
+
+    if (
+      !table ||
+      !col
+    ) {
+      return;
+    }
+
+    const oldWidth =
+      Number(
+        col.dataset.width ??
+        '48'
+      );
+
+    const requiredWidth =
+      calculateRowNumberWidth(
+        rowCount
+      );
+
+    if (
+      requiredWidth <=
+      oldWidth
+    ) {
+      return;
+    }
+
+    col.style.width =
+      requiredWidth + 'px';
+
+    col.dataset.width =
+      String(
+        requiredWidth
+      );
+
+    const currentTableWidth =
+      Number(
+        table.dataset.tableWidth ??
+        table.offsetWidth
+      );
+
+    const newTableWidth =
+      currentTableWidth -
+      oldWidth +
+      requiredWidth;
+
+    table.style.width =
+      newTableWidth + 'px';
+
+    table.dataset.tableWidth =
+      String(
+        newTableWidth
+      );
+  }
+
+
+  function setColumnWidth(
+    columnIndex,
+    width
+  ) {
+    const table =
+      getResultTable();
+
+    const col =
+      document.getElementById(
+        'result-col-' + columnIndex
+      );
+
+    if (
+      !table ||
+      !col
+    ) {
+      return;
+    }
+
+    const oldWidth =
+      Number(
+        col.dataset.width ??
+        col.style.width.replace('px', '') ??
+        '0'
+      );
+
+    const newWidth =
+      Math.max(
+        MIN_RESIZABLE_COLUMN_WIDTH,
+        Math.round(width)
+      );
+
+    col.style.width =
+      newWidth + 'px';
+
+    col.dataset.width =
+      String(newWidth);
+
+    const currentTableWidth =
+      Number(
+        table.dataset.tableWidth ??
+        table.offsetWidth
+      );
+
+    const newTableWidth =
+      currentTableWidth -
+      oldWidth +
+      newWidth;
+
+    table.style.width =
+      newTableWidth + 'px';
+
+    table.dataset.tableWidth =
+      String(newTableWidth);
+  }
+
+
+  function startColumnResize(
+    event,
+    columnIndex
+  ) {
+    event.preventDefault();
+    event.stopPropagation();
+
+    const col =
+      document.getElementById(
+        'result-col-' + columnIndex
+      );
+
+    if (!col) {
+      return;
+    }
+
+    activeResize = {
+      columnIndex,
+      startX:
+        event.clientX,
+      startWidth:
+        Number(
+          col.dataset.width ??
+          col.offsetWidth
+        )
+    };
+
+    document.body.classList.add(
+      'column-resizing'
+    );
+  }
+
+
+  function resizeColumnMove(
+    event
+  ) {
+    if (!activeResize) {
+      return;
+    }
+
+    const width =
+      activeResize.startWidth +
+      event.clientX -
+      activeResize.startX;
+
+    setColumnWidth(
+      activeResize.columnIndex,
+      width
+    );
+  }
+
+
+  function finishColumnResize() {
+    if (!activeResize) {
+      return;
+    }
+
+    const columnIndex =
+      activeResize.columnIndex;
+
+    const col =
+      document.getElementById(
+        'result-col-' + columnIndex
+      );
+
+    activeResize =
+      undefined;
+
+    document.body.classList.remove(
+      'column-resizing'
+    );
+
+    if (!col) {
+      return;
+    }
+
+    vscode.postMessage({
+      command:
+        'resizeColumn',
+      id:
+        activeResultId,
+      columnIndex,
+      width:
+        Number(col.dataset.width)
+    });
+  }
+
+
+  function autoFitColumn(
+    event,
+    columnIndex
+  ) {
+    event.preventDefault();
+    event.stopPropagation();
+
+    vscode.postMessage({
+      command:
+        'autoFitColumn',
+      id:
+        activeResultId,
+      columnIndex
+    });
+  }
+
+
+  window.addEventListener(
+    'mousemove',
+    resizeColumnMove
+  );
+
+  window.addEventListener(
+    'mouseup',
+    finishColumnResize
+  );
 
 
   const VIRTUAL_ROW_HEIGHT =
@@ -3836,6 +4299,11 @@ function buildResultsHtml():
     }
 
 
+    ensureRowNumberWidth(
+      message.rowCount
+    );
+
+
     if (rowCount) {
 
       rowCount.textContent =
@@ -3943,6 +4411,11 @@ function buildResultsHtml():
         }
 
 
+        ensureRowNumberWidth(
+          message.rowCount
+        );
+
+
         return;
 
       }
@@ -3955,6 +4428,21 @@ function buildResultsHtml():
 
         updateFetchUi(
           message
+        );
+
+        return;
+
+      }
+
+
+      if (
+        message.command ===
+        'columnWidth'
+      ) {
+
+        setColumnWidth(
+          message.columnIndex,
+          message.width
         );
 
         return;
@@ -4129,21 +4617,34 @@ function buildGridHtml(
 
 
   const columnWidths =
-    getInitialColumnWidths(
-      tab,
-      columns
+    tab.columnWidths.length ===
+      columns.length
+      ? tab.columnWidths
+      : calculateColumnWidths(
+          tab.rows,
+          columns,
+          tab.nlsSettings
+        );
+
+
+  const rowNumberWidth =
+    calculateRowNumberWidthForCount(
+      tab.rows.length
     );
 
 
   const colgroupHtml =
     `
       <colgroup>
-        <col style="width: 48px">
+        <col id="row-number-col" data-width="${rowNumberWidth}" style="width: ${rowNumberWidth}px">
         ${
           columnWidths
             .map(
-              width =>
-                `<col style="width: ${width}px">`
+              (
+                width,
+                index
+              ) =>
+                `<col id="result-col-${index}" data-width="${width}" style="width: ${width}px">`
             )
             .join('')
         }
@@ -4152,7 +4653,7 @@ function buildGridHtml(
 
 
   const tableWidth =
-    48 +
+    rowNumberWidth +
     columnWidths.reduce(
       (
         total,
@@ -4171,8 +4672,11 @@ function buildGridHtml(
     ` +
     columns
       .map(
-        column =>
-          `<th>${escapeHtml(column.name)}</th>`
+        (
+          column,
+          columnIndex
+        ) =>
+          `<th class="column-header">${escapeHtml(column.name)}<span class="column-resizer" onmousedown="startColumnResize(event, ${columnIndex})" ondblclick="autoFitColumn(event, ${columnIndex})"></span></th>`
       )
       .join('');
 
@@ -4188,7 +4692,7 @@ function buildGridHtml(
   tabindex="0"
 >
 
-  <table style="width: ${Math.max(tableWidth, 48)}px">
+  <table id="result-table" data-table-width="${Math.max(tableWidth, rowNumberWidth)}" style="width: ${Math.max(tableWidth, rowNumberWidth)}px">
 
     ${colgroupHtml}
 
@@ -4234,7 +4738,7 @@ function buildGridHtml(
   data-total-rows="${tab.rows.length}"
 >
 
-  <table style="width: ${Math.max(tableWidth, 48)}px">
+  <table id="result-table" data-table-width="${Math.max(tableWidth, rowNumberWidth)}" style="width: ${Math.max(tableWidth, rowNumberWidth)}px">
 
     ${colgroupHtml}
 
@@ -4257,14 +4761,67 @@ function buildGridHtml(
 }
 
 
-function getInitialColumnWidths(
-  tab:
-    ResultTab,
+function calculateRowNumberWidthForCount(
+  rowCount:
+    number
+): number {
+
+  const digits =
+    Math.max(
+      1,
+      String(
+        Math.max(
+          1,
+          rowCount
+        )
+      ).length
+    );
+
+  return Math.max(
+    48,
+    (digits * 8) + 24
+  );
+}
+
+
+function calculateColumnWidths(
+  rows:
+    Array<Record<string, unknown>>,
 
   columns:
-    ColumnMetadata[]
+    ColumnMetadata[],
+
+  nlsSettings:
+    NlsSettings
 ): number[] {
 
+  const sampleRows =
+    rows.slice(
+      0,
+      PAGE_SIZE
+    );
+
+  return columns.map(
+    column =>
+      calculateColumnWidth(
+        sampleRows,
+        column,
+        nlsSettings
+      )
+  );
+}
+
+
+function calculateColumnWidth(
+  rows:
+    Array<Record<string, unknown>>,
+
+  column:
+    ColumnMetadata,
+
+  nlsSettings:
+    NlsSettings
+): number {
 
   const MIN_COLUMN_WIDTH =
     90;
@@ -4278,65 +4835,43 @@ function getInitialColumnWidths(
   const CELL_HORIZONTAL_PADDING =
     24;
 
-  const sampleRows =
-    tab.rows.slice(
-      0,
-      PAGE_SIZE
-    );
+  let maxLength =
+    column.name.length;
 
-
-  return columns.map(
-    column => {
-
-      let maxLength =
-        column.name.length;
-
-
-      for (
-        const row of sampleRows
-      ) {
-
-        const value =
-          getRowValue(
-            row,
-            column.name
-          );
-
-
-        const displayLength =
-          getDisplayLengthForWidth(
-            value,
-            column,
-            tab.nlsSettings
-          );
-
-
-        if (
-          displayLength >
-          maxLength
-        ) {
-
-          maxLength =
-            displayLength;
-
-        }
-
-      }
-
-
-      return Math.max(
-        MIN_COLUMN_WIDTH,
-        Math.min(
-          MAX_COLUMN_WIDTH,
-          maxLength *
-            APPROX_CHARACTER_WIDTH +
-            CELL_HORIZONTAL_PADDING
-        )
+  for (
+    const row of rows
+  ) {
+    const value =
+      getRowValue(
+        row,
+        column.name
       );
 
-    }
-  );
+    const displayLength =
+      getDisplayLengthForWidth(
+        value,
+        column,
+        nlsSettings
+      );
 
+    if (
+      displayLength >
+      maxLength
+    ) {
+      maxLength =
+        displayLength;
+    }
+  }
+
+  return Math.max(
+    MIN_COLUMN_WIDTH,
+    Math.min(
+      MAX_COLUMN_WIDTH,
+      maxLength *
+        APPROX_CHARACTER_WIDTH +
+        CELL_HORIZONTAL_PADDING
+    )
+  );
 }
 
 
@@ -4351,16 +4886,12 @@ function getDisplayLengthForWidth(
     NlsSettings
 ): number {
 
-
   if (
     value === null ||
     value === undefined
   ) {
-
     return 0;
-
   }
-
 
   const formatted =
     formatCell(
@@ -4368,7 +4899,6 @@ function getDisplayLengthForWidth(
       column,
       nlsSettings
     );
-
 
   const plainText =
     formatted
@@ -4381,10 +4911,9 @@ function getDisplayLengthForWidth(
         'x'
       );
 
-
   return plainText.length;
-
 }
+
 
 function getColumns(
   tab:
