@@ -13,6 +13,9 @@ const ORACLE_EXTENSION_ID =
 const COMMAND_ID =
   'oracleCleanResults.runQuery';
 
+const COPY_WITH_HEADERS_COMMAND_ID =
+  'oracleCleanResults.copyWithHeaders';
+
 const RESULTS_VIEW_ID =
   'oracleCleanResults.resultsView';
 
@@ -80,6 +83,13 @@ interface FilterOption {
 }
 
 
+interface GridSelection {
+  startRow: number;
+  endRow: number;
+  startColumn: number;
+  endColumn: number;
+}
+
 interface ResultTab {
 
   id:
@@ -127,6 +137,9 @@ interface ResultTab {
   filterKeyCache?:
     Map<number, string[]>;
 
+  selection?:
+    GridSelection;
+
 }
 
 
@@ -143,7 +156,9 @@ interface WebviewMessage {
     | 'autoFitColumn'
     | 'sortColumn'
     | 'requestFilterOptions'
-    | 'applyFilter';
+    | 'applyFilter'
+    | 'setSelection'
+    | 'copySelection';
 
   id:
     number;
@@ -162,6 +177,12 @@ interface WebviewMessage {
 
   selectedKeys?:
     string[];
+
+  startRow?: number;
+  endRow?: number;
+  startColumn?: number;
+  endColumn?: number;
+  includeHeaders?: boolean;
 
 }
 
@@ -364,6 +385,27 @@ async function handleWebviewMessage(
 
         break;
 
+      case 'setSelection':
+
+        setResultSelection(
+          message.id,
+          message.startRow ?? -1,
+          message.endRow ?? -1,
+          message.startColumn ?? -1,
+          message.endColumn ?? -1
+        );
+
+        break;
+
+      case 'copySelection':
+
+        await copyResultSelection(
+          message.id,
+          Boolean(message.includeHeaders)
+        );
+
+        break;
+
     }
 
   } catch (
@@ -472,6 +514,35 @@ export async function activate(
 
   context.subscriptions.push(
     commandDisposable
+  );
+
+
+  const copyWithHeadersDisposable =
+    vscode.commands.registerCommand(
+      COPY_WITH_HEADERS_COMMAND_ID,
+      async () => {
+
+        if (
+          activeResultId ===
+          undefined
+        ) {
+
+          return;
+
+        }
+
+
+        await copyResultSelection(
+          activeResultId,
+          true
+        );
+
+      }
+    );
+
+
+  context.subscriptions.push(
+    copyWithHeadersDisposable
   );
 
 }
@@ -2143,6 +2214,9 @@ async function addQueryResult(
     activeTab.filterKeyCache =
       undefined;
 
+    activeTab.selection =
+      undefined;
+
   } else {
 
     const newTab:
@@ -2638,7 +2712,11 @@ async function sendVirtualRows(
 
 
                   return `
-                    <td>
+                    <td
+                      class="data-cell"
+                      data-row="${rowIndex}"
+                      data-column="${columns.indexOf(column)}"
+                    >
                       ${formatCell(
                         value,
                         column,
@@ -2655,7 +2733,11 @@ async function sendVirtualRows(
           return `
             <tr class="virtual-data-row">
 
-              <td class="row-number">
+              <td
+                class="row-number"
+                data-row="${rowIndex}"
+                data-row-selector="true"
+              >
                 ${rowIndex + 1}
               </td>
 
@@ -2692,6 +2774,9 @@ async function sendVirtualRows(
           columns.length + 1,
           1
         ),
+
+      selection:
+        tab.selection ?? null,
 
       rowsHtml
 
@@ -3581,6 +3666,66 @@ async function applyResultFilter(
 
   }
 
+}
+
+
+function normaliseGridSelection(selection: GridSelection, rowCount: number, columnCount: number): GridSelection | undefined {
+  if (rowCount <= 0 || columnCount <= 0) return undefined;
+  return {
+    startRow: Math.max(0, Math.min(selection.startRow, selection.endRow, rowCount - 1)),
+    endRow: Math.max(0, Math.min(Math.max(selection.startRow, selection.endRow), rowCount - 1)),
+    startColumn: Math.max(0, Math.min(selection.startColumn, selection.endColumn, columnCount - 1)),
+    endColumn: Math.max(0, Math.min(Math.max(selection.startColumn, selection.endColumn), columnCount - 1))
+  };
+}
+
+function setResultSelection(id: number, startRow: number, endRow: number, startColumn: number, endColumn: number): void {
+  const tab = resultTabs.find(item => item.id === id);
+  if (!tab) return;
+  tab.selection = normaliseGridSelection(
+    { startRow, endRow, startColumn, endColumn },
+    getDisplayRows(tab).length,
+    getColumns(tab).length
+  );
+}
+
+function clipboardCellText(value: unknown, column: ColumnMetadata, nlsSettings: NlsSettings): string {
+  if (value === null || value === undefined) return '';
+  return formatCell(value, column, nlsSettings)
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\r?\n/g, ' ')
+    .replace(/\t/g, ' ');
+}
+
+async function copyResultSelection(id: number, includeHeaders: boolean): Promise<void> {
+  const tab = resultTabs.find(item => item.id === id);
+  if (!tab || !tab.selection) return;
+
+  const columns = getColumns(tab);
+  const rows = getDisplayRows(tab);
+  const s = normaliseGridSelection(tab.selection, rows.length, columns.length);
+  if (!s) return;
+
+  const lines: string[] = [];
+
+  if (includeHeaders) {
+    lines.push(columns.slice(s.startColumn, s.endColumn + 1).map(column => column.name).join('\t'));
+  }
+
+  for (let r = s.startRow; r <= s.endRow; r++) {
+    const values: string[] = [];
+    for (let c = s.startColumn; c <= s.endColumn; c++) {
+      const column = columns[c];
+      values.push(clipboardCellText(getRowValue(rows[r], column.name), column, tab.nlsSettings));
+    }
+    lines.push(values.join('\t'));
+  }
+
+  await vscode.env.clipboard.writeText(lines.join('\n'));
 }
 
 
@@ -5144,6 +5289,23 @@ function buildResultsHtml():
   }
 
 
+  #grid-wrap:focus,
+  #grid-wrap:focus-visible {
+    outline: none;
+  }
+
+  .data-cell,
+  .row-number[data-row-selector="true"] {
+    cursor: default;
+    user-select: none;
+  }
+
+  .data-cell.grid-selected,
+  .row-number.grid-selected {
+    background: var(--vscode-list-activeSelectionBackground) !important;
+    color: var(--vscode-list-activeSelectionForeground) !important;
+  }
+
   .virtual-data-row {
     height:
       27px;
@@ -6177,6 +6339,12 @@ function buildResultsHtml():
 
   let automaticFetchRequested =
     false;
+  let gridSelection = null;
+  let selectionAnchor = null;
+  let activeCell = null;
+  let isSelecting = false;
+  let rowSelectionMode = false;
+
 
   const AUTO_FETCH_THRESHOLD_ROWS =
     50;
@@ -6224,6 +6392,473 @@ function buildResultsHtml():
       activeResultId
     );
 
+  }
+
+
+  function normaliseClientSelection(selection) {
+    if (!selection) return null;
+    return {
+      startRow: Math.min(selection.startRow, selection.endRow),
+      endRow: Math.max(selection.startRow, selection.endRow),
+      startColumn: Math.min(selection.startColumn, selection.endColumn),
+      endColumn: Math.max(selection.startColumn, selection.endColumn)
+    };
+  }
+
+  function getDataColumnCount() {
+    const grid = document.getElementById('grid-wrap');
+    if (!grid) return 0;
+    return Number(grid.dataset.columnCount ?? '0');
+  }
+
+  function applySelectionHighlight() {
+    const s = normaliseClientSelection(gridSelection);
+
+    document.querySelectorAll('.data-cell').forEach(cell => {
+      const row = Number(cell.dataset.row);
+      const column = Number(cell.dataset.column);
+      cell.classList.toggle('grid-selected', Boolean(
+        s && row >= s.startRow && row <= s.endRow &&
+        column >= s.startColumn && column <= s.endColumn
+      ));
+    });
+
+    document.querySelectorAll('.row-number[data-row-selector="true"]').forEach(cell => {
+      const row = Number(cell.dataset.row);
+      cell.classList.toggle('grid-selected', Boolean(
+        s && row >= s.startRow && row <= s.endRow &&
+        s.startColumn === 0 && s.endColumn === Math.max(0, getDataColumnCount() - 1)
+      ));
+    });
+  }
+
+  function commitGridSelection() {
+    const s = normaliseClientSelection(gridSelection);
+    if (!s) return;
+    vscode.postMessage({
+      command: 'setSelection', id: activeResultId,
+      startRow: s.startRow, endRow: s.endRow,
+      startColumn: s.startColumn, endColumn: s.endColumn
+    });
+  }
+
+  function beginCellSelection(
+    row,
+    column,
+    extendSelection = false
+  ) {
+
+    if (
+      extendSelection &&
+      selectionAnchor
+    ) {
+
+      activeCell = {
+        row,
+        column
+      };
+
+      gridSelection = {
+        startRow:
+          selectionAnchor.row,
+        endRow:
+          row,
+        startColumn:
+          selectionAnchor.column,
+        endColumn:
+          column
+      };
+
+    } else {
+
+      selectionAnchor = {
+        row,
+        column
+      };
+
+      activeCell = {
+        row,
+        column
+      };
+
+      gridSelection = {
+        startRow:
+          row,
+        endRow:
+          row,
+        startColumn:
+          column,
+        endColumn:
+          column
+      };
+
+    }
+
+
+    rowSelectionMode =
+      false;
+
+    isSelecting =
+      !extendSelection;
+
+    applySelectionHighlight();
+
+
+    if (extendSelection) {
+
+      commitGridSelection();
+
+    }
+
+  }
+
+
+  function extendCellSelection(
+    row,
+    column
+  ) {
+
+    if (
+      !isSelecting ||
+      !selectionAnchor
+    ) {
+
+      return;
+
+    }
+
+
+    activeCell = {
+      row,
+      column
+    };
+
+    gridSelection = {
+      startRow:
+        selectionAnchor.row,
+      endRow:
+        row,
+      startColumn:
+        selectionAnchor.column,
+      endColumn:
+        column
+    };
+
+    applySelectionHighlight();
+
+  }
+
+
+  function selectWholeRow(
+    row,
+    extendSelection = false
+  ) {
+
+    const count =
+      getDataColumnCount();
+
+
+    if (
+      count <= 0
+    ) {
+
+      return;
+
+    }
+
+
+    if (
+      extendSelection &&
+      selectionAnchor &&
+      rowSelectionMode
+    ) {
+
+      activeCell = {
+        row,
+        column:
+          count - 1
+      };
+
+      gridSelection = {
+        startRow:
+          selectionAnchor.row,
+        endRow:
+          row,
+        startColumn:
+          0,
+        endColumn:
+          count - 1
+      };
+
+    } else {
+
+      selectionAnchor = {
+        row,
+        column:
+          0
+      };
+
+      activeCell = {
+        row,
+        column:
+          count - 1
+      };
+
+      gridSelection = {
+        startRow:
+          row,
+        endRow:
+          row,
+        startColumn:
+          0,
+        endColumn:
+          count - 1
+      };
+
+    }
+
+
+    rowSelectionMode =
+      true;
+
+    isSelecting =
+      false;
+
+    applySelectionHighlight();
+    commitGridSelection();
+
+  }
+
+
+  function ensureActiveCellVisible() {
+
+    if (!activeCell) {
+
+      return;
+
+    }
+
+
+    const grid =
+      document.getElementById(
+        'grid-wrap'
+      );
+
+
+    if (!grid) {
+
+      return;
+
+    }
+
+
+    const rowTop =
+      activeCell.row *
+      VIRTUAL_ROW_HEIGHT;
+
+    const rowBottom =
+      rowTop +
+      VIRTUAL_ROW_HEIGHT;
+
+
+    if (
+      rowTop <
+      grid.scrollTop
+    ) {
+
+      grid.scrollTop =
+        rowTop;
+
+    } else if (
+      rowBottom >
+      grid.scrollTop +
+      grid.clientHeight
+    ) {
+
+      grid.scrollTop =
+        Math.max(
+          0,
+          rowBottom -
+          grid.clientHeight
+        );
+
+    }
+
+
+    requestVisibleRows();
+
+  }
+
+
+  function moveActiveCell(
+    rowDelta,
+    columnDelta,
+    extendSelection
+  ) {
+
+    const grid =
+      document.getElementById(
+        'grid-wrap'
+      );
+
+
+    if (!grid) {
+
+      return;
+
+    }
+
+
+    const rowCount =
+      Number(
+        grid.dataset.totalRows ??
+        '0'
+      );
+
+    const columnCount =
+      getDataColumnCount();
+
+
+    if (
+      rowCount <= 0 ||
+      columnCount <= 0
+    ) {
+
+      return;
+
+    }
+
+
+    if (!activeCell) {
+
+      const selection =
+        normaliseClientSelection(
+          gridSelection
+        );
+
+
+      activeCell =
+        selection
+          ? {
+              row:
+                selection.endRow,
+              column:
+                selection.endColumn
+            }
+          : {
+              row:
+                0,
+              column:
+                0
+            };
+
+    }
+
+
+    const nextRow =
+      Math.max(
+        0,
+        Math.min(
+          rowCount - 1,
+          activeCell.row +
+          rowDelta
+        )
+      );
+
+    const nextColumn =
+      Math.max(
+        0,
+        Math.min(
+          columnCount - 1,
+          activeCell.column +
+          columnDelta
+        )
+      );
+
+
+    if (extendSelection) {
+
+      if (!selectionAnchor) {
+
+        selectionAnchor = {
+          row:
+            activeCell.row,
+          column:
+            activeCell.column
+        };
+
+      }
+
+
+      rowSelectionMode =
+        false;
+
+      activeCell = {
+        row:
+          nextRow,
+        column:
+          nextColumn
+      };
+
+      gridSelection = {
+        startRow:
+          selectionAnchor.row,
+        endRow:
+          nextRow,
+        startColumn:
+          selectionAnchor.column,
+        endColumn:
+          nextColumn
+      };
+
+    } else {
+
+      selectionAnchor = {
+        row:
+          nextRow,
+        column:
+          nextColumn
+      };
+
+      activeCell = {
+        row:
+          nextRow,
+        column:
+          nextColumn
+      };
+
+      rowSelectionMode =
+        false;
+
+      gridSelection = {
+        startRow:
+          nextRow,
+        endRow:
+          nextRow,
+        startColumn:
+          nextColumn,
+        endColumn:
+          nextColumn
+      };
+
+    }
+
+
+    applySelectionHighlight();
+    commitGridSelection();
+    ensureActiveCellVisible();
+
+  }
+
+
+  function copyGridSelection(includeHeaders) {
+    if (!gridSelection) return;
+    commitGridSelection();
+    vscode.postMessage({
+      command: 'copySelection',
+      id: activeResultId,
+      includeHeaders
+    });
   }
 
 
@@ -6402,6 +7037,20 @@ function buildResultsHtml():
       '" style="height: ' +
       bottomHeight +
       'px"></td></tr>';
+    if (message.selection) {
+      gridSelection = message.selection;
+
+      if (!activeCell) {
+        activeCell = {
+          row:
+            message.selection.endRow,
+          column:
+            message.selection.endColumn
+        };
+      }
+    }
+
+    applySelectionHighlight();
 
   }
 
@@ -6573,6 +7222,223 @@ function buildResultsHtml():
     requestVisibleRows();
 
   }
+
+
+  document.addEventListener('mousedown', event => {
+
+    /*
+     * Only the primary mouse button starts or changes a grid selection.
+     *
+     * In particular, a right-click must preserve the existing selection so
+     * the native context-menu Copy command operates on that selection.
+     */
+    if (event.button !== 0) {
+      return;
+    }
+
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+
+    const rowSelector = target.closest('.row-number[data-row-selector="true"]');
+    if (rowSelector) {
+      event.preventDefault();
+
+      const grid =
+        document.getElementById(
+          'grid-wrap'
+        );
+
+      grid?.focus();
+
+      selectWholeRow(
+        Number(rowSelector.dataset.row),
+        event.shiftKey
+      );
+      return;
+    }
+
+    const cell = target.closest('.data-cell');
+    if (!cell) return;
+
+    event.preventDefault();
+
+    const grid =
+      document.getElementById(
+        'grid-wrap'
+      );
+
+    grid?.focus();
+
+    beginCellSelection(
+      Number(cell.dataset.row),
+      Number(cell.dataset.column),
+      event.shiftKey
+    );
+  });
+
+  document.addEventListener('mouseover', event => {
+    if (!isSelecting) return;
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    const cell = target.closest('.data-cell');
+    if (!cell) return;
+    extendCellSelection(Number(cell.dataset.row), Number(cell.dataset.column));
+  });
+
+  document.addEventListener('mouseup', () => {
+    if (!isSelecting) return;
+    isSelecting = false;
+    commitGridSelection();
+  });
+
+  document.addEventListener(
+    'keydown',
+    event => {
+
+      const key =
+        event.key.toLowerCase();
+
+
+      if (
+        key === 'c' &&
+        (
+          event.ctrlKey ||
+          event.metaKey
+        ) &&
+        gridSelection
+      ) {
+
+        event.preventDefault();
+        event.stopPropagation();
+
+        copyGridSelection(
+          event.shiftKey
+        );
+
+        return;
+
+      }
+
+
+      if (
+        event.ctrlKey ||
+        event.metaKey ||
+        event.altKey
+      ) {
+
+        return;
+
+      }
+
+
+      let rowDelta =
+        0;
+
+      let columnDelta =
+        0;
+
+
+      switch (
+        event.key
+      ) {
+
+        case 'ArrowUp':
+          rowDelta =
+            -1;
+          break;
+
+        case 'ArrowDown':
+          rowDelta =
+            1;
+          break;
+
+        case 'ArrowLeft':
+          columnDelta =
+            -1;
+          break;
+
+        case 'ArrowRight':
+          columnDelta =
+            1;
+          break;
+
+        default:
+          return;
+
+      }
+
+
+      if (!gridSelection) {
+
+        return;
+
+      }
+
+
+      event.preventDefault();
+      event.stopPropagation();
+
+      moveActiveCell(
+        rowDelta,
+        columnDelta,
+        event.shiftKey
+      );
+
+    }
+  );
+
+  document.addEventListener('copy', event => {
+    if (!gridSelection || event.defaultPrevented) return;
+    event.preventDefault();
+    copyGridSelection(false);
+  });
+
+
+  document.addEventListener(
+    'contextmenu',
+    event => {
+
+      const target =
+        event.target;
+
+
+      if (
+        !(target instanceof Element)
+      ) {
+
+        return;
+
+      }
+
+
+      const resultCell =
+        target.closest(
+          '.data-cell, .row-number[data-row-selector="true"]'
+        );
+
+
+      if (
+        !resultCell ||
+        !gridSelection
+      ) {
+
+        return;
+
+      }
+
+
+      isSelecting =
+        false;
+
+      const grid =
+        document.getElementById(
+          'grid-wrap'
+        );
+
+      grid?.focus();
+
+    }
+  );
 
 
   window.addEventListener(
@@ -7169,7 +8035,10 @@ function buildGridHtml(
   id="grid-wrap"
   tabindex="0"
   data-total-rows="${displayRowCount}"
->
+  data-column-count="${columns.length}"
+
+    data-vscode-context='{"webviewSection":"resultsGrid"}'
+  >
 
   <table id="result-table" data-table-width="${Math.max(tableWidth, rowNumberWidth)}" style="width: ${Math.max(tableWidth, rowNumberWidth)}px">
 
