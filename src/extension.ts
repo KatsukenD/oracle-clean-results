@@ -69,6 +69,17 @@ interface SortState {
 }
 
 
+interface FilterOption {
+
+  key:
+    string;
+
+  label:
+    string;
+
+}
+
+
 interface ResultTab {
 
   id:
@@ -110,6 +121,12 @@ interface ResultTab {
   displayRowsCache?:
     Array<Record<string, unknown>>;
 
+  filters?:
+    Map<number, Set<string>>;
+
+  filterKeyCache?:
+    Map<number, string[]>;
+
 }
 
 
@@ -124,7 +141,9 @@ interface WebviewMessage {
     | 'requestRows'
     | 'resizeColumn'
     | 'autoFitColumn'
-    | 'sortColumn';
+    | 'sortColumn'
+    | 'requestFilterOptions'
+    | 'applyFilter';
 
   id:
     number;
@@ -140,6 +159,9 @@ interface WebviewMessage {
 
   width?:
     number;
+
+  selectedKeys?:
+    string[];
 
 }
 
@@ -317,6 +339,27 @@ async function handleWebviewMessage(
         await sortResultColumn(
           message.id,
           message.columnIndex ?? -1
+        );
+
+        break;
+
+
+      case 'requestFilterOptions':
+
+        await sendFilterOptions(
+          message.id,
+          message.columnIndex ?? -1
+        );
+
+        break;
+
+
+      case 'applyFilter':
+
+        await applyResultFilter(
+          message.id,
+          message.columnIndex ?? -1,
+          message.selectedKeys ?? []
         );
 
         break;
@@ -1980,12 +2023,30 @@ function getRowValue(
 ): unknown {
 
 
+  if (
+    Object.prototype.hasOwnProperty.call(
+      row,
+      columnName
+    )
+  ) {
+
+    return row[
+      columnName
+    ];
+
+  }
+
+
+  const upperColumnName =
+    columnName.toUpperCase();
+
+
   const matchingKey =
     Object.keys(row)
       .find(
         key =>
           key.toUpperCase() ===
-          columnName.toUpperCase()
+          upperColumnName
       );
 
 
@@ -2074,6 +2135,12 @@ async function addQueryResult(
       undefined;
 
     activeTab.displayRowsCache =
+      undefined;
+
+    activeTab.filters =
+      undefined;
+
+    activeTab.filterKeyCache =
       undefined;
 
   } else {
@@ -2193,7 +2260,7 @@ async function fetchMoreRows(
 
 
     
-    invalidateDisplayRows(
+    invalidateFetchedRowCaches(
       tab
     );
 
@@ -2303,7 +2370,7 @@ async function fetchAllRows(
 
 
       
-    invalidateDisplayRows(
+    invalidateFetchedRowCaches(
       tab
     );
 
@@ -2449,6 +2516,9 @@ async function sendFetchState(
 
       rowCount:
         tab.rows.length,
+
+      displayRowCount:
+        getDisplayRows(tab).length,
 
       hasMore:
         tab.hasMore,
@@ -2642,28 +2712,455 @@ function invalidateDisplayRows(
 }
 
 
+function invalidateFetchedRowCaches(
+  tab:
+    ResultTab
+): void {
+
+
+  invalidateDisplayRows(
+    tab
+  );
+
+  tab.filterKeyCache =
+    undefined;
+
+}
+
+
+function getFilterKey(
+  value:
+    unknown
+): string {
+
+
+  if (
+    value === null ||
+    value === undefined
+  ) {
+
+    return 'null:';
+
+  }
+
+
+  if (
+    value instanceof Date
+  ) {
+
+    return 'date:' +
+      value.toISOString();
+
+  }
+
+
+  if (
+    typeof value ===
+    'object'
+  ) {
+
+    try {
+
+      return 'object:' +
+        JSON.stringify(value);
+
+    } catch {
+
+      return 'object:' +
+        String(value);
+
+    }
+
+  }
+
+
+  return typeof value +
+    ':' +
+    String(value);
+
+}
+
+
+function formatFilterLabel(
+  value:
+    unknown,
+
+  column:
+    ColumnMetadata,
+
+  nlsSettings:
+    NlsSettings
+): string {
+
+
+  if (
+    value === null ||
+    value === undefined
+  ) {
+
+    return '(blank)';
+
+  }
+
+
+  const dataType =
+    column.dataType
+      ?.toUpperCase()
+    ?? '';
+
+
+  if (
+    dataType === 'DATE'
+  ) {
+
+    if (
+      typeof value ===
+      'string'
+    ) {
+
+      return formatOracleTemporalString(
+        value,
+        nlsSettings.dateFormat
+      );
+
+    }
+
+
+    if (
+      value instanceof Date
+    ) {
+
+      return formatTemporalParts(
+        getPartsFromDate(value),
+        nlsSettings.dateFormat
+      );
+
+    }
+
+  }
+
+
+  if (
+    dataType.startsWith(
+      'TIMESTAMP'
+    )
+  ) {
+
+    if (
+      typeof value ===
+      'string'
+    ) {
+
+      return formatOracleTemporalString(
+        value,
+        nlsSettings.timestampFormat
+      );
+
+    }
+
+
+    if (
+      value instanceof Date
+    ) {
+
+      return formatTemporalParts(
+        getPartsFromDate(value),
+        nlsSettings.timestampFormat
+      );
+
+    }
+
+  }
+
+
+  if (
+    typeof value ===
+    'object'
+  ) {
+
+    try {
+
+      return JSON.stringify(value);
+
+    } catch {
+
+      return String(value);
+
+    }
+
+  }
+
+
+  return String(value);
+
+}
+
+
+function getFilterKeysForColumn(
+  tab:
+    ResultTab,
+
+  columnIndex:
+    number,
+
+  column:
+    ColumnMetadata
+): string[] {
+
+
+  if (!tab.filterKeyCache) {
+
+    tab.filterKeyCache =
+      new Map<number, string[]>();
+
+  }
+
+
+  const cached =
+    tab.filterKeyCache.get(
+      columnIndex
+    );
+
+
+  if (cached) {
+
+    return cached;
+
+  }
+
+
+  const keys =
+    tab.rows.map(
+      row =>
+        getFilterKey(
+          getRowValue(
+            row,
+            column.name
+          )
+        )
+    );
+
+
+  tab.filterKeyCache.set(
+    columnIndex,
+    keys
+  );
+
+
+  return keys;
+
+}
+
+
+function rowMatchesOtherFilters(
+  tab:
+    ResultTab,
+
+  rowIndex:
+    number,
+
+  excludedColumnIndex:
+    number,
+
+  columns:
+    ColumnMetadata[]
+): boolean {
+
+
+  for (
+    const [
+      columnIndex,
+      selectedKeys
+    ] of tab.filters ?? []
+  ) {
+
+    if (
+      columnIndex ===
+      excludedColumnIndex
+    ) {
+
+      continue;
+
+    }
+
+
+    const column =
+      columns[
+        columnIndex
+      ];
+
+
+    if (!column) {
+
+      continue;
+
+    }
+
+
+    const keys =
+      getFilterKeysForColumn(
+        tab,
+        columnIndex,
+        column
+      );
+
+
+    if (
+      !selectedKeys.has(
+        keys[
+          rowIndex
+        ]
+      )
+    ) {
+
+      return false;
+
+    }
+
+  }
+
+
+  return true;
+
+}
+
+
+function getDistinctFilterOptions(
+  tab:
+    ResultTab,
+
+  columnIndex:
+    number
+): FilterOption[] {
+
+
+  const columns =
+    getColumns(tab);
+
+  const column =
+    columns[columnIndex];
+
+
+  if (!column) {
+
+    return [];
+
+  }
+
+
+  const options =
+    new Map<string, string>();
+
+
+  const filterKeys =
+    getFilterKeysForColumn(
+      tab,
+      columnIndex,
+      column
+    );
+
+
+  for (
+    let rowIndex = 0;
+    rowIndex < tab.rows.length;
+    rowIndex++
+  ) {
+
+    if (
+      !rowMatchesOtherFilters(
+        tab,
+        rowIndex,
+        columnIndex,
+        columns
+      )
+    ) {
+
+      continue;
+
+    }
+
+
+    const key =
+      filterKeys[
+        rowIndex
+      ];
+
+
+    if (
+      !options.has(key)
+    ) {
+
+      const value =
+        getRowValue(
+          tab.rows[rowIndex],
+          column.name
+        );
+
+
+      options.set(
+        key,
+        formatFilterLabel(
+          value,
+          column,
+          tab.nlsSettings
+        )
+      );
+
+    }
+
+  }
+
+
+  return Array.from(
+    options.entries()
+  )
+    .map(
+      ([key, label]) => ({
+        key,
+        label
+      })
+    )
+    .sort(
+      (left, right) =>
+        left.label.localeCompare(
+          right.label,
+          undefined,
+          {
+            numeric: true,
+            sensitivity: 'base'
+          }
+        )
+    );
+
+}
+
+
 function getDisplayRows(
   tab:
     ResultTab
 ): Array<Record<string, unknown>> {
 
 
+  const hasFilters =
+    Boolean(
+      tab.filters &&
+      tab.filters.size > 0
+    );
+
   const sortState =
     tab.sortState;
 
 
-  if (!sortState) {
+  if (
+    !hasFilters &&
+    !sortState
+  ) {
 
     return tab.rows;
 
   }
 
 
-  /*
-   * Cache the sorted display order so virtual
-   * scrolling does not re-sort the entire fetched
-   * result set for every requested row window.
-   */
   if (
     tab.displayRowsCache
   ) {
@@ -2674,99 +3171,418 @@ function getDisplayRows(
 
 
   const columns =
-    getColumns(
-      tab
-    );
-
-  const column =
-    columns[
-      sortState.columnIndex
-    ];
+    getColumns(tab);
 
 
-  if (!column) {
-
-    return tab.rows;
-
-  }
+  let displayRows:
+    Array<Record<string, unknown>>;
 
 
-  const sortedRows =
-    tab.rows
-      .map(
-        (
-          row,
-          originalIndex
-        ) => ({
-          row,
-          originalIndex
-        })
+  if (hasFilters) {
+
+    const activeFilters =
+      Array.from(
+        tab.filters ?? []
       )
-      .sort(
+        .map(
+          (
+            [
+              columnIndex,
+              selectedKeys
+            ]
+          ) => {
+
+            const column =
+              columns[
+                columnIndex
+              ];
+
+
+            if (!column) {
+
+              return undefined;
+
+            }
+
+
+            return {
+              selectedKeys,
+              keys:
+                getFilterKeysForColumn(
+                  tab,
+                  columnIndex,
+                  column
+                )
+            };
+
+          }
+        )
+        .filter(
+          (
+            item
+          ): item is {
+            selectedKeys:
+              Set<string>;
+            keys:
+              string[];
+          } =>
+            item !== undefined
+        );
+
+
+    displayRows =
+      tab.rows.filter(
         (
-          left,
-          right
+          _row,
+          rowIndex
         ) => {
 
-          const leftValue =
-            getRowValue(
-              left.row,
-              column.name
-            );
-
-          const rightValue =
-            getRowValue(
-              right.row,
-              column.name
-            );
-
-          const comparison =
-            compareSortValues(
-              leftValue,
-              rightValue,
-              column
-            );
-
-
-          if (
-            comparison !== 0
+          for (
+            const filter of
+              activeFilters
           ) {
 
-            const hasBlank =
-              leftValue === null ||
-              leftValue === undefined ||
-              rightValue === null ||
-              rightValue === undefined;
+            if (
+              !filter.selectedKeys.has(
+                filter.keys[
+                  rowIndex
+                ]
+              )
+            ) {
 
+              return false;
 
-            return hasBlank
-              ? comparison
-              : sortState.direction ===
-                  'asc'
-                ? comparison
-                : -comparison;
+            }
 
           }
 
 
-          return left.originalIndex -
-            right.originalIndex;
+          return true;
 
         }
-      )
-      .map(
-        item =>
-          item.row
       );
+
+  } else {
+
+    displayRows =
+      tab.rows.slice();
+
+  }
+
+
+  if (sortState) {
+
+    const column =
+      columns[
+        sortState.columnIndex
+      ];
+
+
+    if (column) {
+
+      displayRows =
+        displayRows
+          .map(
+            (
+              row,
+              originalIndex
+            ) => ({
+              row,
+              originalIndex
+            })
+          )
+          .sort(
+            (left, right) => {
+
+              const leftValue =
+                getRowValue(
+                  left.row,
+                  column.name
+                );
+
+              const rightValue =
+                getRowValue(
+                  right.row,
+                  column.name
+                );
+
+              const comparison =
+                compareSortValues(
+                  leftValue,
+                  rightValue,
+                  column
+                );
+
+
+              if (
+                comparison !== 0
+              ) {
+
+                const hasBlank =
+                  leftValue === null ||
+                  leftValue === undefined ||
+                  rightValue === null ||
+                  rightValue === undefined;
+
+
+                return hasBlank
+                  ? comparison
+                  : sortState.direction ===
+                      'asc'
+                    ? comparison
+                    : -comparison;
+
+              }
+
+
+              return left.originalIndex -
+                right.originalIndex;
+
+            }
+          )
+          .map(
+            item =>
+              item.row
+          );
+
+    }
+
+  }
 
 
   tab.displayRowsCache =
-    sortedRows;
+    displayRows;
 
 
-  return sortedRows;
+  return displayRows;
 
 }
+
+
+async function sendFilterOptions(
+  id:
+    number,
+
+  columnIndex:
+    number
+): Promise<void> {
+
+
+  if (!resultsView) {
+
+    return;
+
+  }
+
+
+  const tab =
+    resultTabs.find(
+      item =>
+        item.id === id
+    );
+
+
+  if (!tab) {
+
+    return;
+
+  }
+
+
+  const columns =
+    getColumns(tab);
+
+
+  if (
+    columnIndex < 0 ||
+    columnIndex >= columns.length
+  ) {
+
+    return;
+
+  }
+
+
+  const options =
+    getDistinctFilterOptions(
+      tab,
+      columnIndex
+    );
+
+  const activeFilter =
+    tab.filters?.get(
+      columnIndex
+    );
+
+
+  await resultsView.webview
+    .postMessage({
+
+      command:
+        'filterOptions',
+
+      id,
+
+      columnIndex,
+
+      columnName:
+        columns[columnIndex].name,
+
+      options,
+
+      selectedKeys:
+        activeFilter
+          ? Array.from(
+              activeFilter
+            )
+          : options.map(
+              option =>
+                option.key
+            ),
+
+      filterActive:
+        Boolean(activeFilter)
+
+    });
+
+}
+
+
+async function applyResultFilter(
+  id:
+    number,
+
+  columnIndex:
+    number,
+
+  selectedKeys:
+    string[]
+): Promise<void> {
+
+
+  const tab =
+    resultTabs.find(
+      item =>
+        item.id === id
+    );
+
+
+  if (!tab) {
+
+    return;
+
+  }
+
+
+  const columns =
+    getColumns(tab);
+
+
+  if (
+    columnIndex < 0 ||
+    columnIndex >= columns.length
+  ) {
+
+    return;
+
+  }
+
+
+  const allKeys =
+    getDistinctFilterOptions(
+      tab,
+      columnIndex
+    )
+      .map(
+        option =>
+          option.key
+      );
+
+  const selected =
+    new Set(selectedKeys);
+
+  const allSelected =
+    selected.size ===
+      allKeys.length &&
+    allKeys.every(
+      key =>
+        selected.has(key)
+    );
+
+
+  if (!tab.filters) {
+
+    tab.filters =
+      new Map<number, Set<string>>();
+
+  }
+
+
+  if (allSelected) {
+
+    tab.filters.delete(
+      columnIndex
+    );
+
+  } else {
+
+    tab.filters.set(
+      columnIndex,
+      selected
+    );
+
+  }
+
+
+  if (
+    tab.filters.size === 0
+  ) {
+
+    tab.filters =
+      undefined;
+
+  }
+
+
+  invalidateDisplayRows(
+    tab
+  );
+
+
+  if (
+    resultsView &&
+    activeResultId === id
+  ) {
+
+    await resultsView.webview
+      .postMessage({
+
+        command:
+          'filterState',
+
+        id,
+
+        columnIndex,
+
+        filterActive:
+          Boolean(
+            tab.filters?.has(
+              columnIndex
+            )
+          ),
+
+        displayRowCount:
+          getDisplayRows(tab).length,
+
+        fetchedRowCount:
+          tab.rows.length
+
+      });
+
+  }
+
+}
+
 
 function compareSortValues(
   left:
@@ -3870,9 +4686,6 @@ function buildResultsHtml():
 
     width:
       max-content;
-
-    min-width:
-      100%;
   }
 
 
@@ -3976,6 +4789,275 @@ function buildResultsHtml():
 
     vertical-align:
       middle;
+  }
+
+
+  .column-title {
+    vertical-align:
+      middle;
+  }
+
+
+  .filter-button {
+    display:
+      inline-flex;
+
+    align-items:
+      center;
+
+    justify-content:
+      center;
+
+    width:
+      20px;
+
+    height:
+      20px;
+
+    margin-left:
+      2px;
+
+    padding:
+      0;
+
+    border:
+      0;
+
+    border-radius:
+      2px;
+
+    color:
+      var(--vscode-descriptionForeground);
+
+    background:
+      transparent;
+
+    cursor:
+      pointer;
+
+    vertical-align:
+      middle;
+  }
+
+
+  .filter-button:hover,
+  .filter-button.active {
+    color:
+      var(--vscode-foreground);
+
+    background:
+      var(--vscode-toolbar-hoverBackground);
+  }
+
+
+  .filter-button.active {
+    outline:
+      1px solid var(--vscode-focusBorder);
+  }
+
+
+  .filter-popup {
+    position:
+      fixed;
+
+    z-index:
+      1000;
+
+    width:
+      300px;
+
+    max-height:
+      420px;
+
+    display:
+      flex;
+
+    flex-direction:
+      column;
+
+    border:
+      1px solid var(--vscode-widget-border);
+
+    border-radius:
+      3px;
+
+    background:
+      var(--vscode-menu-background);
+
+    color:
+      var(--vscode-menu-foreground);
+
+    box-shadow:
+      0 4px 16px rgba(0, 0, 0, 0.25);
+  }
+
+
+  .filter-popup-header {
+    padding:
+      8px 10px 4px;
+
+    font-weight:
+      600;
+  }
+
+
+  .filter-search {
+    margin:
+      4px 8px 6px;
+
+    padding:
+      5px 7px;
+
+    border:
+      1px solid var(--vscode-input-border);
+
+    color:
+      var(--vscode-input-foreground);
+
+    background:
+      var(--vscode-input-background);
+
+    font-family:
+      inherit;
+  }
+
+
+  .filter-actions {
+    display:
+      flex;
+
+    gap:
+      6px;
+
+    padding:
+      0 8px 6px;
+  }
+
+
+  .filter-link {
+    border:
+      0;
+
+    padding:
+      2px 4px;
+
+    color:
+      var(--vscode-textLink-foreground);
+
+    background:
+      transparent;
+
+    cursor:
+      pointer;
+
+    font-family:
+      inherit;
+  }
+
+
+  .filter-values {
+    overflow-y:
+      auto;
+
+    min-height:
+      80px;
+
+    max-height:
+      280px;
+
+    border-top:
+      1px solid var(--vscode-menu-separatorBackground);
+
+    border-bottom:
+      1px solid var(--vscode-menu-separatorBackground);
+
+    padding:
+      4px 0;
+  }
+
+
+  .filter-option {
+    display:
+      flex;
+
+    align-items:
+      center;
+
+    gap:
+      6px;
+
+    padding:
+      3px 10px;
+
+    white-space:
+      nowrap;
+  }
+
+
+  .filter-option:hover {
+    background:
+      var(--vscode-list-hoverBackground);
+  }
+
+
+  .filter-option span {
+    overflow:
+      hidden;
+
+    text-overflow:
+      ellipsis;
+  }
+
+
+  .filter-footer {
+    display:
+      flex;
+
+    justify-content:
+      flex-end;
+
+    gap:
+      6px;
+
+    padding:
+      8px;
+  }
+
+
+  .filter-apply,
+  .filter-cancel {
+    border:
+      0;
+
+    border-radius:
+      2px;
+
+    padding:
+      4px 10px;
+
+    font-family:
+      inherit;
+
+    cursor:
+      pointer;
+  }
+
+
+  .filter-apply {
+    color:
+      var(--vscode-button-foreground);
+
+    background:
+      var(--vscode-button-background);
+  }
+
+
+  .filter-cancel {
+    color:
+      var(--vscode-button-secondaryForeground);
+
+    background:
+      var(--vscode-button-secondaryBackground);
   }
 
 
@@ -4236,6 +5318,537 @@ function buildResultsHtml():
 
       id
     });
+
+  }
+
+
+  let openFilterColumn =
+    undefined;
+
+  let filterOptions =
+    [];
+
+  let filterSelection =
+    new Set();
+
+
+  function closeFilterMenu() {
+
+    const popup =
+      document.getElementById(
+        'filter-popup'
+      );
+
+
+    if (popup) {
+
+      popup.remove();
+
+    }
+
+
+    openFilterColumn =
+      undefined;
+
+    filterOptions =
+      [];
+
+    filterSelection =
+      new Set();
+
+  }
+
+
+  function openFilterMenu(
+    event,
+    columnIndex
+  ) {
+
+    event.preventDefault();
+    event.stopPropagation();
+
+
+    closeFilterMenu();
+
+
+    openFilterColumn =
+      columnIndex;
+
+
+    vscode.postMessage({
+      command:
+        'requestFilterOptions',
+
+      id:
+        activeResultId,
+
+      columnIndex
+    });
+
+  }
+
+
+  function renderFilterOptions() {
+
+    const values =
+      document.getElementById(
+        'filter-values'
+      );
+
+    const search =
+      document.getElementById(
+        'filter-search'
+      );
+
+
+    if (!values) {
+
+      return;
+
+    }
+
+
+    const searchText =
+      String(
+        search?.value ?? ''
+      )
+        .toLocaleLowerCase();
+
+
+    values.innerHTML =
+      '';
+
+
+    for (
+      const option of filterOptions
+    ) {
+
+      if (
+        searchText &&
+        !option.label
+          .toLocaleLowerCase()
+          .includes(searchText)
+      ) {
+
+        continue;
+
+      }
+
+
+      const label =
+        document.createElement(
+          'label'
+        );
+
+      label.className =
+        'filter-option';
+
+
+      const checkbox =
+        document.createElement(
+          'input'
+        );
+
+      checkbox.type =
+        'checkbox';
+
+      checkbox.checked =
+        filterSelection.has(
+          option.key
+        );
+
+      checkbox.addEventListener(
+        'change',
+        () => {
+
+          if (checkbox.checked) {
+
+            filterSelection.add(
+              option.key
+            );
+
+          } else {
+
+            filterSelection.delete(
+              option.key
+            );
+
+          }
+
+        }
+      );
+
+
+      const text =
+        document.createElement(
+          'span'
+        );
+
+      text.textContent =
+        option.label;
+
+      text.title =
+        option.label;
+
+
+      label.appendChild(
+        checkbox
+      );
+
+      label.appendChild(
+        text
+      );
+
+      values.appendChild(
+        label
+      );
+
+    }
+
+  }
+
+
+  function setVisibleFilterSelection(
+    selected
+  ) {
+
+    const search =
+      document.getElementById(
+        'filter-search'
+      );
+
+    const searchText =
+      String(
+        search?.value ?? ''
+      )
+        .toLocaleLowerCase();
+
+
+    for (
+      const option of filterOptions
+    ) {
+
+      if (
+        searchText &&
+        !option.label
+          .toLocaleLowerCase()
+          .includes(searchText)
+      ) {
+
+        continue;
+
+      }
+
+
+      if (selected) {
+
+        filterSelection.add(
+          option.key
+        );
+
+      } else {
+
+        filterSelection.delete(
+          option.key
+        );
+
+      }
+
+    }
+
+
+    renderFilterOptions();
+
+  }
+
+
+  function applyOpenFilter() {
+
+    if (
+      openFilterColumn ===
+      undefined
+    ) {
+
+      return;
+
+    }
+
+
+    vscode.postMessage({
+      command:
+        'applyFilter',
+
+      id:
+        activeResultId,
+
+      columnIndex:
+        openFilterColumn,
+
+      selectedKeys:
+        Array.from(
+          filterSelection
+        )
+    });
+
+
+    closeFilterMenu();
+
+  }
+
+
+  function showFilterPopup(
+    message
+  ) {
+
+    if (
+      openFilterColumn !==
+      message.columnIndex
+    ) {
+
+      return;
+
+    }
+
+
+    filterOptions =
+      message.options ?? [];
+
+    filterSelection =
+      new Set(
+        message.selectedKeys ?? []
+      );
+
+
+    const button =
+      document.querySelector(
+        '[data-filter-column="' +
+        message.columnIndex +
+        '"]'
+      );
+
+
+    if (!button) {
+
+      return;
+
+    }
+
+
+    const popup =
+      document.createElement(
+        'div'
+      );
+
+    popup.id =
+      'filter-popup';
+
+    popup.className =
+      'filter-popup';
+
+
+    const header =
+      document.createElement(
+        'div'
+      );
+
+    header.className =
+      'filter-popup-header';
+
+    header.textContent =
+      message.columnName;
+
+
+    const search =
+      document.createElement(
+        'input'
+      );
+
+    search.id =
+      'filter-search';
+
+    search.className =
+      'filter-search';
+
+    search.type =
+      'text';
+
+    search.placeholder =
+      'Search values';
+
+    search.addEventListener(
+      'input',
+      renderFilterOptions
+    );
+
+
+    const actions =
+      document.createElement(
+        'div'
+      );
+
+    actions.className =
+      'filter-actions';
+
+
+    const selectAll =
+      document.createElement(
+        'button'
+      );
+
+    selectAll.className =
+      'filter-link';
+
+    selectAll.textContent =
+      'Select All';
+
+    selectAll.onclick =
+      () =>
+        setVisibleFilterSelection(
+          true
+        );
+
+
+    const clearAll =
+      document.createElement(
+        'button'
+      );
+
+    clearAll.className =
+      'filter-link';
+
+    clearAll.textContent =
+      'Clear All';
+
+    clearAll.onclick =
+      () =>
+        setVisibleFilterSelection(
+          false
+        );
+
+
+    actions.appendChild(
+      selectAll
+    );
+
+    actions.appendChild(
+      clearAll
+    );
+
+
+    const values =
+      document.createElement(
+        'div'
+      );
+
+    values.id =
+      'filter-values';
+
+    values.className =
+      'filter-values';
+
+
+    const footer =
+      document.createElement(
+        'div'
+      );
+
+    footer.className =
+      'filter-footer';
+
+
+    const cancel =
+      document.createElement(
+        'button'
+      );
+
+    cancel.className =
+      'filter-cancel';
+
+    cancel.textContent =
+      'Cancel';
+
+    cancel.onclick =
+      closeFilterMenu;
+
+
+    const apply =
+      document.createElement(
+        'button'
+      );
+
+    apply.className =
+      'filter-apply';
+
+    apply.textContent =
+      'Apply';
+
+    apply.onclick =
+      applyOpenFilter;
+
+
+    footer.appendChild(
+      cancel
+    );
+
+    footer.appendChild(
+      apply
+    );
+
+
+    popup.appendChild(
+      header
+    );
+
+    popup.appendChild(
+      search
+    );
+
+    popup.appendChild(
+      actions
+    );
+
+    popup.appendChild(
+      values
+    );
+
+    popup.appendChild(
+      footer
+    );
+
+    document.body.appendChild(
+      popup
+    );
+
+
+    const rect =
+      button.getBoundingClientRect();
+
+    const popupWidth =
+      300;
+
+    const left =
+      Math.max(
+        4,
+        Math.min(
+          rect.left,
+          window.innerWidth -
+            popupWidth - 4
+        )
+      );
+
+    popup.style.left =
+      left + 'px';
+
+    popup.style.top =
+      Math.min(
+        rect.bottom + 2,
+        window.innerHeight - 430
+      ) + 'px';
+
+
+    renderFilterOptions();
+
+    search.focus();
 
   }
 
@@ -4614,7 +6227,10 @@ function buildResultsHtml():
   }
 
 
-  function requestVisibleRows() {
+  function requestVisibleRows(
+    allowAutomaticFetch =
+      true
+  ) {
 
     const grid =
       document.getElementById(
@@ -4663,12 +6279,18 @@ function buildResultsHtml():
       );
 
 
-    maybeFetchMore(
-      grid,
-      totalRows,
-      firstVisible,
-      visibleCount
-    );
+    if (
+      allowAutomaticFetch
+    ) {
+
+      maybeFetchMore(
+        grid,
+        totalRows,
+        firstVisible,
+        visibleCount
+      );
+
+    }
 
 
     const start =
@@ -4873,6 +6495,7 @@ function buildResultsHtml():
 
       grid.dataset.totalRows =
         String(
+          message.displayRowCount ??
           message.rowCount
         );
 
@@ -5092,6 +6715,113 @@ function buildResultsHtml():
 
       if (
         message.command ===
+        'filterOptions'
+      ) {
+
+        showFilterPopup(
+          message
+        );
+
+        return;
+
+      }
+
+
+      if (
+        message.command ===
+        'filterState'
+      ) {
+
+        const button =
+          document.querySelector(
+            '[data-filter-column="' +
+            message.columnIndex +
+            '"]'
+          );
+
+
+        if (button) {
+
+          button.classList.toggle(
+            'active',
+            Boolean(
+              message.filterActive
+            )
+          );
+
+        }
+
+
+        const rowCount =
+          document.getElementById(
+            'row-count'
+          );
+
+
+        if (rowCount) {
+
+          rowCount.textContent =
+            message.filterActive ||
+            document.querySelector(
+              '.filter-button.active'
+            )
+              ? message.displayRowCount +
+                ' shown / ' +
+                message.fetchedRowCount +
+                ' fetched'
+              : message.fetchedRowCount +
+                ' rows fetched';
+
+        }
+
+
+        const grid =
+          document.getElementById(
+            'grid-wrap'
+          );
+
+
+        if (grid) {
+
+          grid.dataset.totalRows =
+            String(
+              message.displayRowCount
+            );
+
+        }
+
+
+        requestedStart =
+          -1;
+
+        requestedEnd =
+          -1;
+
+
+        const gridWrap =
+          document.getElementById(
+            'grid-wrap'
+          );
+
+        if (gridWrap) {
+
+          gridWrap.scrollTop =
+            0;
+
+        }
+
+
+        requestVisibleRows(
+          false
+        );
+
+        return;
+
+      }
+
+
+      if (
+        message.command ===
         'columnWidth'
       ) {
 
@@ -5124,6 +6854,20 @@ function buildResultsHtml():
     'keydown',
 
     event => {
+
+      if (
+        event.key === 'Escape' &&
+        openFilterColumn !== undefined
+      ) {
+
+        event.preventDefault();
+
+        closeFilterMenu();
+
+        return;
+
+      }
+
 
       const isFetchAllShortcut =
         (
@@ -5299,6 +7043,12 @@ function buildGridHtml(
     );
 
 
+  const displayRowCount =
+    getDisplayRows(
+      tab
+    ).length;
+
+
   const columnWidths =
     tab.columnWidths.length ===
       columns.length
@@ -5359,13 +7109,13 @@ function buildGridHtml(
           column,
           columnIndex
         ) =>
-          `<th class="column-header" data-column-index="${columnIndex}" onclick="sortColumn(event, ${columnIndex})" title="Click to sort">${escapeHtml(column.name)}<span class="sort-indicator">${getSortIndicatorHtml(tab, columnIndex)}</span><span class="column-resizer" onmousedown="startColumnResize(event, ${columnIndex})" ondblclick="autoFitColumn(event, ${columnIndex})"></span></th>`
+          `<th class="column-header" data-column-index="${columnIndex}" onclick="sortColumn(event, ${columnIndex})" title="Click heading to sort"><span class="column-title">${escapeHtml(column.name)}</span><span class="sort-indicator">${getSortIndicatorHtml(tab, columnIndex)}</span><button class="filter-button ${tab.filters?.has(columnIndex) ? 'active' : ''}" data-filter-column="${columnIndex}" onclick="openFilterMenu(event, ${columnIndex})" title="Filter ${escapeHtml(column.name)}">&#9662;</button><span class="column-resizer" onmousedown="startColumnResize(event, ${columnIndex})" ondblclick="autoFitColumn(event, ${columnIndex})"></span></th>`
       )
       .join('');
 
 
   if (
-    tab.rows.length ===
+    displayRowCount ===
     0
   ) {
 
@@ -5418,7 +7168,7 @@ function buildGridHtml(
   class="grid-wrap"
   id="grid-wrap"
   tabindex="0"
-  data-total-rows="${tab.rows.length}"
+  data-total-rows="${displayRowCount}"
 >
 
   <table id="result-table" data-table-width="${Math.max(tableWidth, rowNumberWidth)}" style="width: ${Math.max(tableWidth, rowNumberWidth)}px">
@@ -5507,16 +7257,24 @@ function calculateColumnWidth(
 ): number {
 
   const MIN_COLUMN_WIDTH =
-    90;
+    64;
 
   const MAX_COLUMN_WIDTH =
     420;
 
   const APPROX_CHARACTER_WIDTH =
-    8;
+    7;
 
+  /*
+   * Allow enough room for cell padding plus the
+   * sort/filter controls without the generous
+   * buffer used by earlier versions.
+   */
   const CELL_HORIZONTAL_PADDING =
-    24;
+    18;
+
+  const HEADER_CONTROL_ALLOWANCE =
+    34;
 
   let maxLength =
     column.name.length;
@@ -5546,13 +7304,25 @@ function calculateColumnWidth(
     }
   }
 
+  const dataWidth =
+    maxLength *
+      APPROX_CHARACTER_WIDTH +
+      CELL_HORIZONTAL_PADDING;
+
+  const headerWidth =
+    column.name.length *
+      APPROX_CHARACTER_WIDTH +
+      HEADER_CONTROL_ALLOWANCE;
+
+
   return Math.max(
     MIN_COLUMN_WIDTH,
     Math.min(
       MAX_COLUMN_WIDTH,
-      maxLength *
-        APPROX_CHARACTER_WIDTH +
-        CELL_HORIZONTAL_PADDING
+      Math.max(
+        dataWidth,
+        headerWidth
+      )
     )
   );
 }
