@@ -4450,6 +4450,23 @@ function buildResultsHtml():
 
 <style>
 
+    /*
+     * Grid selection is model-driven. Disable the webview's native text
+     * selection everywhere except editable controls, so Ctrl/Cmd+A cannot
+     * highlight status text, buttons or headers.
+     */
+    html,
+    body {
+      user-select: none;
+    }
+
+    input,
+    textarea,
+    [contenteditable="true"] {
+      user-select: text;
+    }
+
+
   :root {
     color-scheme:
       light dark;
@@ -6411,6 +6428,23 @@ function buildResultsHtml():
     return Number(grid.dataset.columnCount ?? '0');
   }
 
+  function clearNativeTextSelection() {
+
+    const nativeSelection =
+      window.getSelection();
+
+    if (
+      nativeSelection &&
+      nativeSelection.rangeCount > 0
+    ) {
+
+      nativeSelection.removeAllRanges();
+
+    }
+
+  }
+
+
   function applySelectionHighlight() {
     const s = normaliseClientSelection(gridSelection);
 
@@ -7735,7 +7769,7 @@ function buildResultsHtml():
       }
 
 
-      const isFetchAllShortcut =
+      const isSelectAllShortcut =
         (
           event.metaKey ||
           event.ctrlKey
@@ -7745,7 +7779,7 @@ function buildResultsHtml():
 
 
       if (
-        !isFetchAllShortcut
+        !isSelectAllShortcut
       ) {
 
         return;
@@ -7753,22 +7787,99 @@ function buildResultsHtml():
       }
 
 
-      ${
-        activeTab.hasMore &&
-        !activeTab.isFetching
-          ? `
-            event.preventDefault();
+      const target =
+        event.target;
 
-            event.stopPropagation();
 
-            fetchAll(
-              activeResultId
-            );
-          `
-          : ''
+      if (
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        (
+          target instanceof HTMLElement &&
+          target.isContentEditable
+        )
+      ) {
+
+        return;
+
       }
 
+
+      const grid =
+        document.getElementById(
+          'grid-wrap'
+        );
+
+      const rowCount =
+        Number(
+          grid?.dataset.totalRows ??
+          0
+        );
+
+      const columnCount =
+        getDataColumnCount();
+
+
+      if (
+        rowCount <= 0 ||
+        columnCount <= 0
+      ) {
+
+        return;
+
+      }
+
+
+      event.preventDefault();
+
+      event.stopPropagation();
+
+      clearNativeTextSelection();
+
+
+      selectionAnchor = {
+        row:
+          0,
+        column:
+          0
+      };
+
+      activeCell = {
+        row:
+          rowCount - 1,
+        column:
+          columnCount - 1
+      };
+
+      rowSelectionMode =
+        false;
+
+      isSelecting =
+        false;
+
+      gridSelection = {
+        startRow:
+          0,
+        endRow:
+          rowCount - 1,
+        startColumn:
+          0,
+        endColumn:
+          columnCount - 1
+      };
+
+
+      applySelectionHighlight();
+
+      commitGridSelection();
+
+      grid?.focus();
+
+      clearNativeTextSelection();
+
     }
+  ,
+    true
   );
 
 </script>
@@ -7813,7 +7924,7 @@ function buildFetchControlsHtml(
     id="fetch-all-button"
     onclick="fetchAll(${tab.id})"
     ${tab.isFetching ? 'disabled' : ''}
-    title="Fetch all remaining rows (Cmd+A / Ctrl+A)"
+    title="Fetch all remaining rows"
   >
     Fetch All
   </button>
