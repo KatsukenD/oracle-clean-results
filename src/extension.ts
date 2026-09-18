@@ -158,7 +158,8 @@ interface WebviewMessage {
     | 'requestFilterOptions'
     | 'applyFilter'
     | 'setSelection'
-    | 'copySelection';
+    | 'copySelection'
+    | 'exportResults';
 
   id:
     number;
@@ -402,6 +403,15 @@ async function handleWebviewMessage(
         await copyResultSelection(
           message.id,
           Boolean(message.includeHeaders)
+        );
+
+        break;
+
+
+      case 'exportResults':
+
+        await exportResults(
+          message.id
         );
 
         break;
@@ -3729,6 +3739,1046 @@ async function copyResultSelection(id: number, includeHeaders: boolean): Promise
 }
 
 
+type ExportFormat =
+  'xlsx' |
+  'csv' |
+  'tsv' |
+  'clipboardText' |
+  'insertStatements';
+
+type ExportScope =
+  'current' |
+  'selection' |
+  'all';
+
+interface ExportData {
+  columns: ColumnMetadata[];
+  rows: Array<Record<string, unknown>>;
+}
+
+
+async function exportResults(
+  id: number
+): Promise<void> {
+
+  const tab =
+    resultTabs.find(
+      item =>
+        item.id === id
+    );
+
+  if (!tab) {
+    return;
+  }
+
+
+  const formatPick =
+    await vscode.window.showQuickPick(
+      [
+        {
+          label: '$(file) Excel Workbook (.xlsx)',
+          description: 'Formatted Excel workbook',
+          value: 'xlsx' as ExportFormat
+        },
+        {
+          label: '$(file-text) CSV (.csv)',
+          description: 'Comma-separated values',
+          value: 'csv' as ExportFormat
+        },
+        {
+          label: '$(file-text) TSV (.tsv)',
+          description: 'Tab-separated values',
+          value: 'tsv' as ExportFormat
+        },
+        {
+          label: '$(clippy) Clipboard: Text',
+          description: 'Tab-delimited text with headers',
+          value: 'clipboardText' as ExportFormat
+        },
+        {
+          label: '$(code) Clipboard: Insert Statements',
+          description: 'Oracle INSERT statements',
+          value: 'insertStatements' as ExportFormat
+        }
+      ],
+      {
+        title: 'Export Results',
+        placeHolder: 'Choose an export format'
+      }
+    );
+
+  if (!formatPick) {
+    return;
+  }
+
+
+  const displayRows =
+    getDisplayRows(tab);
+
+  const selection =
+    tab.selection
+      ? normaliseGridSelection(
+          tab.selection,
+          displayRows.length,
+          getColumns(tab).length
+        )
+      : undefined;
+
+  const scopeItems = [
+    {
+      label: '$(list-flat) Current Results',
+      description:
+        `${displayRows.length} displayed row${displayRows.length === 1 ? '' : 's'}; current filters and sorting`,
+      value: 'current' as ExportScope
+    }
+  ];
+
+  if (selection) {
+    const selectedRows =
+      selection.endRow -
+      selection.startRow +
+      1;
+
+    const selectedColumns =
+      selection.endColumn -
+      selection.startColumn +
+      1;
+
+    scopeItems.push({
+      label: '$(selection) Selected Cells',
+      description:
+        `${selectedRows} row${selectedRows === 1 ? '' : 's'} × ${selectedColumns} column${selectedColumns === 1 ? '' : 's'}`,
+      value: 'selection' as ExportScope
+    });
+  }
+
+  scopeItems.push({
+    label: '$(database) All Results',
+    description:
+      tab.hasMore
+        ? `${tab.rows.length} rows fetched; remaining rows will be fetched before export`
+        : `${tab.rows.length} total row${tab.rows.length === 1 ? '' : 's'}; ignores filters and sorting`,
+    value: 'all' as ExportScope
+  });
+
+
+  const scopePick =
+    await vscode.window.showQuickPick(
+      scopeItems,
+      {
+        title: 'Export Results',
+        placeHolder: 'Choose what to export'
+      }
+    );
+
+  if (!scopePick) {
+    return;
+  }
+
+
+  if (
+    scopePick.value === 'all' &&
+    tab.hasMore
+  ) {
+
+    const confirmation =
+      await vscode.window.showInformationMessage(
+        'More rows are available. Fetch all remaining rows before exporting?',
+        {
+          modal: true
+        },
+        'Fetch All and Export'
+      );
+
+    if (
+      confirmation !==
+      'Fetch All and Export'
+    ) {
+      return;
+    }
+
+    await fetchAllRows(
+      tab.id
+    );
+  }
+
+
+  const exportData =
+    getExportData(
+      tab,
+      scopePick.value
+    );
+
+  if (
+    exportData.columns.length === 0
+  ) {
+
+    void vscode.window.showInformationMessage(
+      'Oracle Clean Results: There are no columns to export.'
+    );
+
+    return;
+  }
+
+
+  switch (
+    formatPick.value
+  ) {
+
+    case 'clipboardText':
+
+      await vscode.env.clipboard.writeText(
+        buildDelimitedText(
+          exportData,
+          '\t'
+        )
+      );
+
+      void vscode.window.showInformationMessage(
+        `Oracle Clean Results: ${exportData.rows.length} row${exportData.rows.length === 1 ? '' : 's'} copied to the clipboard.`
+      );
+
+      return;
+
+
+    case 'insertStatements':
+
+      await exportInsertStatementsToClipboard(
+        tab,
+        exportData
+      );
+
+      return;
+
+
+    case 'csv':
+
+      await saveDelimitedExport(
+        tab,
+        exportData,
+        ',',
+        'csv'
+      );
+
+      return;
+
+
+    case 'tsv':
+
+      await saveDelimitedExport(
+        tab,
+        exportData,
+        '\t',
+        'tsv'
+      );
+
+      return;
+
+
+    case 'xlsx':
+
+      await saveExcelExport(
+        tab,
+        exportData
+      );
+
+      return;
+
+  }
+
+}
+
+
+function getExportData(
+  tab: ResultTab,
+  scope: ExportScope
+): ExportData {
+
+  const columns =
+    getColumns(tab);
+
+
+  if (
+    scope === 'all'
+  ) {
+
+    return {
+      columns,
+      rows:
+        tab.rows.slice()
+    };
+
+  }
+
+
+  const displayRows =
+    getDisplayRows(tab);
+
+
+  if (
+    scope === 'selection' &&
+    tab.selection
+  ) {
+
+    const selection =
+      normaliseGridSelection(
+        tab.selection,
+        displayRows.length,
+        columns.length
+      );
+
+    if (selection) {
+
+      return {
+        columns:
+          columns.slice(
+            selection.startColumn,
+            selection.endColumn + 1
+          ),
+        rows:
+          displayRows.slice(
+            selection.startRow,
+            selection.endRow + 1
+          )
+      };
+
+    }
+
+  }
+
+
+  return {
+    columns,
+    rows:
+      displayRows.slice()
+  };
+
+}
+
+
+function exportCellText(
+  value: unknown,
+  column: ColumnMetadata,
+  nlsSettings: NlsSettings
+): string {
+
+  return clipboardCellText(
+    value,
+    column,
+    nlsSettings
+  );
+
+}
+
+
+function quoteDelimitedValue(
+  value: string,
+  delimiter: string
+): string {
+
+  if (
+    value.includes('"') ||
+    value.includes('\n') ||
+    value.includes('\r') ||
+    value.includes(delimiter)
+  ) {
+
+    return '"' +
+      value.replace(
+        /"/g,
+        '""'
+      ) +
+      '"';
+
+  }
+
+
+  return value;
+
+}
+
+
+function buildDelimitedText(
+  data: ExportData,
+  delimiter: string,
+  nlsSettings?: NlsSettings
+): string {
+
+  const settings =
+    nlsSettings ?? {
+      dateFormat: 'DD-MON-RR',
+      timestampFormat: 'DD-MON-RR HH.MI.SSXFF AM'
+    };
+
+  const lines: string[] = [];
+
+  lines.push(
+    data.columns
+      .map(
+        column =>
+          quoteDelimitedValue(
+            column.name,
+            delimiter
+          )
+      )
+      .join(delimiter)
+  );
+
+
+  for (
+    const row of data.rows
+  ) {
+
+    lines.push(
+      data.columns
+        .map(
+          column =>
+            quoteDelimitedValue(
+              exportCellText(
+                getRowValue(
+                  row,
+                  column.name
+                ),
+                column,
+                settings
+              ),
+              delimiter
+            )
+        )
+        .join(delimiter)
+    );
+
+  }
+
+
+  return lines.join(
+    '\n'
+  );
+
+}
+
+
+async function saveDelimitedExport(
+  tab: ResultTab,
+  data: ExportData,
+  delimiter: string,
+  extension: 'csv' | 'tsv'
+): Promise<void> {
+
+  const uri =
+    await vscode.window.showSaveDialog({
+      title:
+        `Export Results as ${extension.toUpperCase()}`,
+      defaultUri:
+        vscode.Uri.file(
+          `oracle-results-${tab.id}.${extension}`
+        ),
+      filters:
+        extension === 'csv'
+          ? {
+              'CSV files': ['csv']
+            }
+          : {
+              'TSV files': ['tsv']
+            }
+    });
+
+  if (!uri) {
+    return;
+  }
+
+
+  const text =
+    buildDelimitedText(
+      data,
+      delimiter,
+      tab.nlsSettings
+    );
+
+  await vscode.workspace.fs.writeFile(
+    uri,
+    Buffer.from(
+      text,
+      'utf8'
+    )
+  );
+
+
+  void vscode.window.showInformationMessage(
+    `Oracle Clean Results: Exported ${data.rows.length} row${data.rows.length === 1 ? '' : 's'} to ${uri.fsPath}.`
+  );
+
+}
+
+
+function excelCellValue(
+  value: unknown,
+  column: ColumnMetadata
+): unknown {
+
+  if (
+    value === null ||
+    value === undefined
+  ) {
+    return null;
+  }
+
+
+  const dataType =
+    column.dataType
+      ?.toUpperCase()
+      ?? '';
+
+
+  if (
+    isNumericDataType(
+      dataType
+    )
+  ) {
+
+    if (
+      typeof value ===
+      'number'
+    ) {
+      return value;
+    }
+
+    const numericValue =
+      Number(value);
+
+    if (
+      Number.isFinite(
+        numericValue
+      )
+    ) {
+      return numericValue;
+    }
+
+  }
+
+
+  if (
+    dataType === 'DATE' ||
+    dataType.startsWith(
+      'TIMESTAMP'
+    )
+  ) {
+
+    const parts =
+      typeof value === 'string'
+        ? parseOracleTemporalString(
+            value
+          )
+        : value instanceof Date
+          ? getPartsFromDate(
+              value
+            )
+          : undefined;
+
+    if (parts) {
+
+      return new Date(
+        parts.year,
+        parts.month - 1,
+        parts.day,
+        parts.hours,
+        parts.minutes,
+        parts.seconds,
+        Number(
+          (
+            parts.fractionalSeconds +
+            '000'
+          )
+            .substring(
+              0,
+              3
+            )
+        )
+      );
+
+    }
+
+  }
+
+
+  if (
+    typeof value ===
+    'object'
+  ) {
+
+    try {
+      return JSON.stringify(
+        value
+      );
+    } catch {
+      return String(
+        value
+      );
+    }
+
+  }
+
+
+  return value;
+
+}
+
+
+async function saveExcelExport(
+  tab: ResultTab,
+  data: ExportData
+): Promise<void> {
+
+  const uri =
+    await vscode.window.showSaveDialog({
+      title:
+        'Export Results as Excel Workbook',
+      defaultUri:
+        vscode.Uri.file(
+          `oracle-results-${tab.id}.xlsx`
+        ),
+      filters: {
+        'Excel Workbook': ['xlsx']
+      }
+    });
+
+  if (!uri) {
+    return;
+  }
+
+
+  /*
+   * exceljs is deliberately loaded here rather than
+   * at extension activation so CSV/clipboard exports
+   * do not pay the startup cost.
+   */
+  const ExcelJS =
+    require(
+      'exceljs'
+    );
+
+  const workbook =
+    new ExcelJS.Workbook();
+
+  const worksheet =
+    workbook.addWorksheet(
+      'Results'
+    );
+
+
+  worksheet.columns =
+    data.columns.map(
+      (
+        column,
+        index
+      ) => ({
+        header:
+          column.name,
+        key:
+          `column_${index}`,
+        width:
+          Math.max(
+            10,
+            Math.min(
+              60,
+              Math.round(
+                (
+                  tab.columnWidths[index] ??
+                  120
+                ) / 7
+              )
+            )
+          )
+      })
+    );
+
+
+  for (
+    const row of data.rows
+  ) {
+
+    worksheet.addRow(
+      data.columns.map(
+        column =>
+          excelCellValue(
+            getRowValue(
+              row,
+              column.name
+            ),
+            column
+          )
+      )
+    );
+
+  }
+
+
+  worksheet.views = [
+    {
+      state: 'frozen',
+      ySplit: 1
+    }
+  ];
+
+
+  if (
+    data.columns.length > 0 &&
+    data.rows.length > 0
+  ) {
+
+    worksheet.autoFilter = {
+      from: {
+        row: 1,
+        column: 1
+      },
+      to: {
+        row: 1,
+        column:
+          data.columns.length
+      }
+    };
+
+  }
+
+
+  const headerRow =
+    worksheet.getRow(1);
+
+  headerRow.font = {
+    bold: true
+  };
+
+
+  const buffer =
+    await workbook.xlsx
+      .writeBuffer();
+
+
+  await vscode.workspace.fs.writeFile(
+    uri,
+    new Uint8Array(
+      buffer
+    )
+  );
+
+
+  void vscode.window.showInformationMessage(
+    `Oracle Clean Results: Exported ${data.rows.length} row${data.rows.length === 1 ? '' : 's'} to ${uri.fsPath}.`
+  );
+
+}
+
+
+function oracleIdentifier(
+  name: string
+): string {
+
+  if (
+    /^[A-Z][A-Z0-9_$#]*$/.test(
+      name
+    )
+  ) {
+    return name;
+  }
+
+
+  return '"' +
+    name.replace(
+      /"/g,
+      '""'
+    ) +
+    '"';
+
+}
+
+
+function oracleInsertValue(
+  value: unknown,
+  column: ColumnMetadata
+): string {
+
+  if (
+    value === null ||
+    value === undefined
+  ) {
+    return 'null';
+  }
+
+
+  const dataType =
+    column.dataType
+      ?.toUpperCase()
+      ?? '';
+
+
+  if (
+    isNumericDataType(
+      dataType
+    )
+  ) {
+    return String(
+      value
+    );
+  }
+
+
+  const temporalParts =
+    typeof value === 'string'
+      ? parseOracleTemporalString(
+          value
+        )
+      : value instanceof Date
+        ? getPartsFromDate(
+            value
+          )
+        : undefined;
+
+
+  if (
+    dataType === 'DATE' &&
+    temporalParts
+  ) {
+
+    const yyyy =
+      String(
+        temporalParts.year
+      )
+        .padStart(
+          4,
+          '0'
+        );
+
+    const mm =
+      String(
+        temporalParts.month
+      )
+        .padStart(
+          2,
+          '0'
+        );
+
+    const dd =
+      String(
+        temporalParts.day
+      )
+        .padStart(
+          2,
+          '0'
+        );
+
+    const hh =
+      String(
+        temporalParts.hours
+      )
+        .padStart(
+          2,
+          '0'
+        );
+
+    const mi =
+      String(
+        temporalParts.minutes
+      )
+        .padStart(
+          2,
+          '0'
+        );
+
+    const ss =
+      String(
+        temporalParts.seconds
+      )
+        .padStart(
+          2,
+          '0'
+        );
+
+    return `to_date('${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}', 'YYYY-MM-DD HH24:MI:SS')`;
+
+  }
+
+
+  if (
+    dataType.startsWith(
+      'TIMESTAMP'
+    ) &&
+    temporalParts
+  ) {
+
+    const yyyy =
+      String(
+        temporalParts.year
+      )
+        .padStart(
+          4,
+          '0'
+        );
+
+    const mm =
+      String(
+        temporalParts.month
+      )
+        .padStart(
+          2,
+          '0'
+        );
+
+    const dd =
+      String(
+        temporalParts.day
+      )
+        .padStart(
+          2,
+          '0'
+        );
+
+    const hh =
+      String(
+        temporalParts.hours
+      )
+        .padStart(
+          2,
+          '0'
+        );
+
+    const mi =
+      String(
+        temporalParts.minutes
+      )
+        .padStart(
+          2,
+          '0'
+        );
+
+    const ss =
+      String(
+        temporalParts.seconds
+      )
+        .padStart(
+          2,
+          '0'
+        );
+
+    const fraction =
+      temporalParts.fractionalSeconds
+        ? `.${temporalParts.fractionalSeconds}`
+        : '';
+
+    return `timestamp '${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}${fraction}'`;
+
+  }
+
+
+  const text =
+    typeof value === 'object'
+      ? JSON.stringify(
+          value
+        )
+      : String(
+          value
+        );
+
+
+  return "'" +
+    text.replace(
+      /'/g,
+      "''"
+    ) +
+    "'";
+
+}
+
+
+async function exportInsertStatementsToClipboard(
+  tab: ResultTab,
+  data: ExportData
+): Promise<void> {
+
+  const tableName =
+    await vscode.window.showInputBox({
+      title:
+        'Export Insert Statements',
+      prompt:
+        'Enter the target table name',
+      placeHolder:
+        'SCHEMA.TABLE_NAME',
+      ignoreFocusOut:
+        true,
+      validateInput:
+        value =>
+          value.trim()
+            ? undefined
+            : 'Enter a table name.'
+    });
+
+  if (!tableName) {
+    return;
+  }
+
+
+  const trimmedTableName =
+    tableName.trim();
+
+  const columnList =
+    data.columns
+      .map(
+        column =>
+          oracleIdentifier(
+            column.name
+          )
+      )
+      .join(
+        ',\n    '
+      );
+
+
+  const statements =
+    data.rows.map(
+      row => {
+
+        const values =
+          data.columns
+            .map(
+              column =>
+                oracleInsertValue(
+                  getRowValue(
+                    row,
+                    column.name
+                  ),
+                  column
+                )
+            )
+            .join(
+              ',\n    '
+            );
+
+
+        return (
+          `insert into ${trimmedTableName} (\n` +
+          `    ${columnList}\n` +
+          `) values (\n` +
+          `    ${values}\n` +
+          `);`
+        );
+
+      }
+    );
+
+
+  await vscode.env.clipboard.writeText(
+    statements.join(
+      '\n\n'
+    )
+  );
+
+
+  void vscode.window.showInformationMessage(
+    `Oracle Clean Results: ${statements.length} INSERT statement${statements.length === 1 ? '' : 's'} copied to the clipboard.`
+  );
+
+}
+
+
 function compareSortValues(
   left:
     unknown,
@@ -5494,6 +6544,20 @@ function buildResultsHtml():
     vscode.postMessage({
       command:
         'fetchAll',
+
+      id
+    });
+
+  }
+
+
+  function exportResults(
+    id
+  ) {
+
+    vscode.postMessage({
+      command:
+        'exportResults',
 
       id
     });
@@ -7898,18 +8962,9 @@ function buildFetchControlsHtml(
 ): string {
 
 
-  if (
-    !tab.hasMore
-  ) {
-
-    return '';
-
-  }
-
-
-  return `
-<div class="fetch-controls" id="fetch-controls">
-
+  const fetchButtons =
+    tab.hasMore
+      ? `
   <button
     class="fetch-button secondary"
     id="fetch-more-button"
@@ -7928,10 +8983,27 @@ function buildFetchControlsHtml(
   >
     Fetch All
   </button>
+`
+      : '';
+
+
+  return `
+<div class="fetch-controls" id="fetch-controls">
+
+  ${fetchButtons}
+
+  <button
+    class="fetch-button secondary"
+    id="export-results-button"
+    onclick="exportResults(${tab.id})"
+    ${tab.isFetching ? 'disabled' : ''}
+    title="Export results"
+  >
+    Export Results
+  </button>
 
 </div>
 `;
-
 }
 
 
