@@ -9208,7 +9208,7 @@ function buildFetchControlsHtml(
   </button>
 
   <button
-    class="fetch-button"
+    class="fetch-button secondary"
     id="fetch-all-button"
     onclick="fetchAll(${tab.id})"
     ${tab.isFetching ? 'disabled' : ''}
