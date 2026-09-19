@@ -98,6 +98,9 @@ interface ResultTab {
   title:
     string;
 
+  sql:
+    string;
+
   rows:
     Array<Record<string, unknown>>;
 
@@ -159,6 +162,7 @@ interface WebviewMessage {
     | 'applyFilter'
     | 'setSelection'
     | 'copySelection'
+    | 'copyQuery'
     | 'exportResults';
 
   id:
@@ -403,6 +407,15 @@ async function handleWebviewMessage(
         await copyResultSelection(
           message.id,
           Boolean(message.includeHeaders)
+        );
+
+        break;
+
+
+      case 'copyQuery':
+
+        await copyResultQuery(
+          message.id
         );
 
         break;
@@ -889,6 +902,7 @@ const executableSql =
       resultSet,
       hasMore,
       elapsedMs,
+      executableSql,
       forceNewTab
     );
 
@@ -2164,6 +2178,9 @@ async function addQueryResult(
   elapsedMs:
     number,
 
+  sql:
+    string,
+
   forceNewTab =
     false
 ): Promise<void> {
@@ -2183,6 +2200,9 @@ async function addQueryResult(
       activeTab
     );
 
+
+    activeTab.sql =
+      sql;
 
     activeTab.rows =
       rows;
@@ -2237,6 +2257,8 @@ async function addQueryResult(
 
         title:
           `Results ${nextResultNumber}`,
+
+        sql,
 
         rows,
 
@@ -3739,6 +3761,32 @@ async function copyResultSelection(id: number, includeHeaders: boolean): Promise
 }
 
 
+
+async function copyResultQuery(
+  id: number
+): Promise<void> {
+
+  const tab =
+    resultTabs.find(
+      item =>
+        item.id === id
+    );
+
+  if (!tab) {
+    return;
+  }
+
+  await vscode.env.clipboard.writeText(
+    tab.sql
+  );
+
+  void vscode.window.showInformationMessage(
+    'Oracle Clean Results: Query copied to the clipboard.'
+  );
+
+}
+
+
 type ExportFormat =
   'xlsx' |
   'csv' |
@@ -3930,7 +3978,8 @@ async function exportResults(
       await vscode.env.clipboard.writeText(
         buildDelimitedText(
           exportData,
-          '\t'
+          '\t',
+          tab.nlsSettings
         )
       );
 
@@ -4447,6 +4496,75 @@ async function saveExcelExport(
   headerRow.font = {
     bold: true
   };
+
+
+  const sqlWorksheet =
+    workbook.addWorksheet(
+      'SQL'
+    );
+
+  sqlWorksheet.getColumn(1).width =
+    24;
+
+  sqlWorksheet.getColumn(2).width =
+    100;
+
+  sqlWorksheet.getCell('A1').value =
+    'SQL Statement';
+
+  sqlWorksheet.getCell('A1').font = {
+    bold: true
+  };
+
+  sqlWorksheet.getCell('A3').value =
+    tab.sql;
+
+  sqlWorksheet.getCell('A3').alignment = {
+    vertical: 'top',
+    wrapText: true
+  };
+
+  sqlWorksheet.mergeCells(
+    'A3:B3'
+  );
+
+  sqlWorksheet.getCell('A5').value =
+    'Rows exported';
+
+  sqlWorksheet.getCell('B5').value =
+    data.rows.length;
+
+  sqlWorksheet.getCell('A6').value =
+    'Exported';
+
+  sqlWorksheet.getCell('B6').value =
+    new Date();
+
+  sqlWorksheet.getCell('B6').numFmt =
+    'yyyy-mm-dd hh:mm:ss';
+
+  sqlWorksheet.getCell('A7').value =
+    'NLS_DATE_FORMAT';
+
+  sqlWorksheet.getCell('B7').value =
+    tab.nlsSettings.dateFormat;
+
+  sqlWorksheet.getCell('A8').value =
+    'NLS_TIMESTAMP_FORMAT';
+
+  sqlWorksheet.getCell('B8').value =
+    tab.nlsSettings.timestampFormat;
+
+  for (
+    const rowNumber of [5, 6, 7, 8]
+  ) {
+    sqlWorksheet.getCell(
+      rowNumber,
+      1
+    ).font = {
+      bold: true
+    };
+  }
 
 
   const buffer =
@@ -5875,6 +5993,52 @@ function buildResultsHtml():
   }
 
 
+  .query-dialog {
+    width: min(900px, 85vw);
+    max-height: 75vh;
+    border: 1px solid var(--vscode-panel-border);
+    border-radius: 4px;
+    padding: 0;
+    color: var(--vscode-editor-foreground);
+    background: var(--vscode-editor-background);
+  }
+
+  .query-dialog::backdrop {
+    background: rgba(0, 0, 0, 0.45);
+  }
+
+  .query-dialog-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--vscode-panel-border);
+    font-weight: 600;
+  }
+
+  .query-dialog-body {
+    margin: 0;
+    padding: 14px;
+    max-height: 55vh;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: normal;
+    user-select: text;
+    font-family: var(--vscode-editor-font-family);
+    font-size: var(--vscode-editor-font-size);
+    line-height: 1.45;
+  }
+
+  .query-dialog-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 6px;
+    padding: 10px 12px;
+    border-top: 1px solid var(--vscode-panel-border);
+  }
+
+
   .grid-wrap {
     overflow:
       auto;
@@ -6465,6 +6629,33 @@ function buildResultsHtml():
   ${gridHtml}
 
 
+<dialog
+  class="query-dialog"
+  id="query-dialog"
+>
+  <div class="query-dialog-header">
+    <span>${escapeHtml(activeTab.title)} — SQL</span>
+  </div>
+
+  <pre class="query-dialog-body">${escapeHtml(activeTab.sql)}</pre>
+
+  <div class="query-dialog-actions">
+    <button
+      class="fetch-button secondary"
+      onclick="copyQuery(${activeTab.id})"
+    >
+      Copy Query
+    </button>
+
+    <button
+      class="fetch-button"
+      onclick="closeQuery()"
+    >
+      Close
+    </button>
+  </div>
+</dialog>
+
 <script>
 
   const vscode =
@@ -6544,6 +6735,48 @@ function buildResultsHtml():
     vscode.postMessage({
       command:
         'fetchAll',
+
+      id
+    });
+
+  }
+
+
+  function showQuery() {
+
+    const dialog =
+      document.getElementById(
+        'query-dialog'
+      );
+
+    if (dialog) {
+      dialog.showModal();
+    }
+
+  }
+
+
+  function closeQuery() {
+
+    const dialog =
+      document.getElementById(
+        'query-dialog'
+      );
+
+    if (dialog) {
+      dialog.close();
+    }
+
+  }
+
+
+  function copyQuery(
+    id
+  ) {
+
+    vscode.postMessage({
+      command:
+        'copyQuery',
 
       id
     });
@@ -8991,6 +9224,16 @@ function buildFetchControlsHtml(
 <div class="fetch-controls" id="fetch-controls">
 
   ${fetchButtons}
+
+  <button
+    class="fetch-button secondary"
+    id="view-query-button"
+    onclick="showQuery()"
+    ${tab.isFetching ? 'disabled' : ''}
+    title="View the SQL statement for this result"
+  >
+    View Query
+  </button>
 
   <button
     class="fetch-button secondary"
