@@ -1,12 +1,13 @@
 {
   "name": "oracle-clean-results",
   "displayName": "Oracle Clean Results",
-  "description": "A lightweight companion to Oracle SQL Developer for VS Code that renders query results with NULL values as blank cells.",
+  "description": "A companion results viewer for Oracle SQL Developer for VS Code with clean NULL handling, NLS-aware formatting, sorting, filtering, large result sets, exports, and query provenance.",
   "version": "0.0.15",
   "repository": {
   "type": "git",
   "url": "https://github.com/KatsukenD/oracle-clean-results.git"
   },
+  "license": "MIT",
   "publisher": "local",
   "engines": {
     "vscode": ">=1.101.0"
