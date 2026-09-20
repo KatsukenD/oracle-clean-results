@@ -1,0 +1,20 @@
+# Source and development files
+src/**
+.vscode/**
+.git/**
+.gitignore
+tsconfig.json
+**/*.map
+
+# macOS metadata
+.DS_Store
+**/.DS_Store
+
+# Previous packaged extensions
+*.vsix
+
+# Documentation not required at runtime
+README.md
+
+# npm development metadata
+node_modules/.package-lock.json
