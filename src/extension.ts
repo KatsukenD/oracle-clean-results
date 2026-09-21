@@ -685,6 +685,21 @@ if (
   );
 
 
+  await vscode.window.showTextDocument(
+    editor.document,
+    {
+      viewColumn:
+        editor.viewColumn,
+
+      preserveFocus:
+        false,
+
+      preview:
+        false
+    }
+  );
+
+
   return;
 
 }
@@ -777,6 +792,21 @@ if (
     );
 
   }
+
+
+  await vscode.window.showTextDocument(
+    editor.document,
+    {
+      viewColumn:
+        editor.viewColumn,
+
+      preserveFocus:
+        false,
+
+      preview:
+        false
+    }
+  );
 
 }
 
@@ -7983,6 +8013,9 @@ function buildResultsHtml():
     }
 
 
+    /*
+     * Keep the active virtual row visible.
+     */
     const rowTop =
       activeCell.row *
       VIRTUAL_ROW_HEIGHT;
@@ -8016,10 +8049,60 @@ function buildResultsHtml():
     }
 
 
+    /*
+     * Keep the active column visible.
+     */
+    const activeElement =
+      grid.querySelector(
+        '.data-cell[data-row="' +
+        activeCell.row +
+        '"][data-column="' +
+        activeCell.column +
+        '"]'
+      );
+
+
+    if (
+      activeElement instanceof HTMLElement
+    ) {
+
+      const cellLeft =
+        activeElement.offsetLeft;
+
+      const cellRight =
+        cellLeft +
+        activeElement.offsetWidth;
+
+
+      if (
+        cellLeft <
+        grid.scrollLeft
+      ) {
+
+        grid.scrollLeft =
+          cellLeft;
+
+      } else if (
+        cellRight >
+        grid.scrollLeft +
+        grid.clientWidth
+      ) {
+
+        grid.scrollLeft =
+          Math.max(
+            0,
+            cellRight -
+            grid.clientWidth
+          );
+
+      }
+
+    }
+
+
     requestVisibleRows();
 
   }
-
 
   function moveActiveCell(
     rowDelta,
@@ -8382,6 +8465,7 @@ function buildResultsHtml():
     }
 
     applySelectionHighlight();
+    ensureActiveCellVisible();
 
   }
 
