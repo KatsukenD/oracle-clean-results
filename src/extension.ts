@@ -7547,6 +7547,185 @@ function buildResultsHtml():
   }
 
 
+  function ensureHeaderColumnWidths() {
+
+    const MAX_AUTO_COLUMN_WIDTH =
+      400;
+
+    const headers =
+      document.querySelectorAll(
+        '.column-header'
+      );
+
+
+    headers.forEach(
+      header => {
+
+        if (!(header instanceof HTMLElement)) {
+
+          return;
+
+        }
+
+
+        const columnIndex =
+          Number(
+            header.dataset.columnIndex
+          );
+
+        const col =
+          document.getElementById(
+            'result-col-' + columnIndex
+          );
+
+        const title =
+          header.querySelector(
+            '.column-title'
+          );
+
+        const sortIndicator =
+          header.querySelector(
+            '.sort-indicator'
+          );
+
+        const filterButton =
+          header.querySelector(
+            '.filter-button'
+          );
+
+
+        if (
+          !col ||
+          !(title instanceof HTMLElement)
+        ) {
+
+          return;
+
+        }
+
+
+        /*
+         * Measure the actual rendered header pieces instead
+         * of estimating from character count. This uses the
+         * current VS Code font and webview rendering.
+         */
+        const headerStyle =
+          window.getComputedStyle(
+            header
+          );
+
+        const titleStyle =
+          window.getComputedStyle(
+            title
+          );
+
+        const canvas =
+          document.createElement(
+            'canvas'
+          );
+
+        const context =
+          canvas.getContext(
+            '2d'
+          );
+
+
+        if (!context) {
+
+          return;
+
+        }
+
+
+        context.font =
+          titleStyle.font;
+
+        const titleWidth =
+          context.measureText(
+            title.textContent ?? ''
+          ).width;
+
+        const horizontalPadding =
+          (
+            Number.parseFloat(
+              headerStyle.paddingLeft
+            ) || 0
+          ) +
+          (
+            Number.parseFloat(
+              headerStyle.paddingRight
+            ) || 0
+          );
+
+        const sortWidth =
+          sortIndicator instanceof HTMLElement
+            ? sortIndicator.getBoundingClientRect().width
+            : 0;
+
+        const filterWidth =
+          filterButton instanceof HTMLElement
+            ? filterButton.getBoundingClientRect().width
+            : 0;
+
+        /*
+         * Include the sort indicator margin and a small amount
+         * of breathing room before the resize handle.
+         */
+        const requiredWidth =
+          Math.min(
+            MAX_AUTO_COLUMN_WIDTH,
+            Math.ceil(
+              titleWidth +
+              horizontalPadding +
+              sortWidth +
+              filterWidth +
+              14
+            )
+          );
+
+        const currentWidth =
+          Number(
+            col.dataset.width ??
+            col.style.width.replace('px', '') ??
+            '0'
+          );
+
+
+        if (
+          requiredWidth <=
+          currentWidth
+        ) {
+
+          return;
+
+        }
+
+
+        setColumnWidth(
+          columnIndex,
+          requiredWidth
+        );
+
+        /*
+         * Persist the corrected width in the extension-side
+         * ResultTab so subsequent renders keep it.
+         */
+        vscode.postMessage({
+          command:
+            'resizeColumn',
+          id:
+            activeResultId,
+          columnIndex,
+          width:
+            requiredWidth
+        });
+
+      }
+    );
+
+  }
+
+
   function startColumnResize(
     event,
     columnIndex
@@ -7686,6 +7865,7 @@ function buildResultsHtml():
   let gridSelection = null;
   let selectionAnchor = null;
   let activeCell = null;
+  let pendingKeyboardVisibilityCheck = false;
   let isSelecting = false;
   let rowSelectionMode = false;
 
@@ -7995,7 +8175,7 @@ function buildResultsHtml():
 
     if (!activeCell) {
 
-      return;
+      return false;
 
     }
 
@@ -8008,7 +8188,7 @@ function buildResultsHtml():
 
     if (!grid) {
 
-      return;
+      return false;
 
     }
 
@@ -8101,6 +8281,17 @@ function buildResultsHtml():
 
 
     requestVisibleRows();
+
+
+    /*
+     * If the destination row is outside the currently
+     * rendered virtual block, ask renderVirtualRows()
+     * to perform one final visibility check after that
+     * row has been rendered.
+     */
+    return !(
+      activeElement instanceof HTMLElement
+    );
 
   }
 
@@ -8260,7 +8451,9 @@ function buildResultsHtml():
 
     applySelectionHighlight();
     commitGridSelection();
-    ensureActiveCellVisible();
+
+    pendingKeyboardVisibilityCheck =
+      ensureActiveCellVisible();
 
   }
 
@@ -8465,7 +8658,23 @@ function buildResultsHtml():
     }
 
     applySelectionHighlight();
-    ensureActiveCellVisible();
+
+
+    /*
+     * Only keyboard navigation is allowed to pull the
+     * viewport back to the active cell. Normal mouse
+     * scrolling must remain wherever the user puts it.
+     */
+    if (
+      pendingKeyboardVisibilityCheck
+    ) {
+
+      pendingKeyboardVisibilityCheck =
+        false;
+
+      ensureActiveCellVisible();
+
+    }
 
   }
 
@@ -8493,6 +8702,13 @@ function buildResultsHtml():
       requestVisibleRows
     );
 
+
+    /*
+     * Refine initial widths using the actual rendered header.
+     * calculateColumnWidth() remains the fast first estimate;
+     * this pass only expands columns whose header still clips.
+     */
+    ensureHeaderColumnWidths();
 
     requestVisibleRows();
 
@@ -9639,21 +9855,22 @@ function calculateColumnWidth(
     64;
 
   const MAX_COLUMN_WIDTH =
-    420;
+    400;
 
   const APPROX_CHARACTER_WIDTH =
     7;
 
   /*
-   * Allow enough room for cell padding plus the
-   * sort/filter controls without the generous
-   * buffer used by earlier versions.
+   * Allow enough room for the complete header,
+   * cell padding, sort indicator, filter button,
+   * and resize handle. Automatic sizing is capped
+   * at 400px; manual resizing can still go wider.
    */
   const CELL_HORIZONTAL_PADDING =
     18;
 
   const HEADER_CONTROL_ALLOWANCE =
-    34;
+    64;
 
   let maxLength =
     column.name.length;
