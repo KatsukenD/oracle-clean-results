@@ -129,7 +129,7 @@ interface ResultTab {
     number[];
 
   sortState?:
-    SortState;
+    SortState[];
 
   displayRowsCache?:
     Array<Record<string, unknown>>;
@@ -192,6 +192,7 @@ interface WebviewMessage {
   endColumn?: number;
   includeHeaders?: boolean;
   selectedColumns?: number[];
+  multiSort?: boolean;
 
 }
 
@@ -368,7 +369,8 @@ async function handleWebviewMessage(
 
         await sortResultColumn(
           message.id,
-          message.columnIndex ?? -1
+          message.columnIndex ?? -1,
+          message.multiSort ?? false
         );
 
         break;
@@ -3311,7 +3313,7 @@ function getDisplayRows(
 
   if (
     !hasFilters &&
-    !sortState
+    (!sortState || sortState.length === 0)
   ) {
 
     return tab.rows;
@@ -3428,29 +3430,30 @@ function getDisplayRows(
   }
 
 
-  if (sortState) {
+  if (sortState && sortState.length > 0) {
 
-    const column =
-      columns[
-        sortState.columnIndex
-      ];
+    displayRows =
+      displayRows
+        .map(
+          (
+            row,
+            originalIndex
+          ) => ({
+            row,
+            originalIndex
+          })
+        )
+        .sort(
+          (left, right) => {
 
+            for (const sort of sortState) {
 
-    if (column) {
+              const column =
+                columns[sort.columnIndex];
 
-      displayRows =
-        displayRows
-          .map(
-            (
-              row,
-              originalIndex
-            ) => ({
-              row,
-              originalIndex
-            })
-          )
-          .sort(
-            (left, right) => {
+              if (!column) {
+                continue;
+              }
 
               const leftValue =
                 getRowValue(
@@ -3471,10 +3474,7 @@ function getDisplayRows(
                   column
                 );
 
-
-              if (
-                comparison !== 0
-              ) {
+              if (comparison !== 0) {
 
                 const hasBlank =
                   leftValue === null ||
@@ -3482,29 +3482,22 @@ function getDisplayRows(
                   rightValue === null ||
                   rightValue === undefined;
 
-
                 return hasBlank
                   ? comparison
-                  : sortState.direction ===
-                      'asc'
+                  : sort.direction === 'asc'
                     ? comparison
                     : -comparison;
-
               }
-
-
-              return left.originalIndex -
-                right.originalIndex;
-
             }
-          )
-          .map(
-            item =>
-              item.row
-          );
 
-    }
-
+            return left.originalIndex -
+              right.originalIndex;
+          }
+        )
+        .map(
+          item =>
+            item.row
+        );
   }
 
 
@@ -5185,7 +5178,10 @@ async function sortResultColumn(
     number,
 
   columnIndex:
-    number
+    number,
+
+  multiSort:
+    boolean = false
 ): Promise<void> {
 
 
@@ -5197,66 +5193,102 @@ async function sortResultColumn(
 
 
   if (!tab) {
-
     return;
-
   }
 
 
   const columns =
-    getColumns(
-      tab
-    );
+    getColumns(tab);
 
 
   if (
     columnIndex < 0 ||
     columnIndex >= columns.length
   ) {
-
     return;
-
   }
 
 
-  /*
-   * Three-state cycle:
-   * unsorted -> ascending -> descending -> unsorted.
-   */
-  if (
-    !tab.sortState ||
-    tab.sortState.columnIndex !==
-      columnIndex
-  ) {
+  const currentSorts =
+    tab.sortState ?? [];
 
-    tab.sortState = {
-      columnIndex,
-      direction:
-        'asc'
-    };
+  const existingIndex =
+    currentSorts.findIndex(
+      sort =>
+        sort.columnIndex === columnIndex
+    );
 
-  } else if (
-    tab.sortState.direction ===
-    'asc'
-  ) {
 
-    tab.sortState = {
-      columnIndex,
-      direction:
-        'desc'
-    };
+  if (!multiSort) {
+
+    /*
+     * Normal click always returns to a single-column sort.
+     * If that column is already the only sort, retain the
+     * familiar asc -> desc -> unsorted cycle.
+     */
+    if (
+      currentSorts.length === 1 &&
+      existingIndex === 0
+    ) {
+
+      const existing =
+        currentSorts[0];
+
+      if (existing.direction === 'asc') {
+        tab.sortState = [{
+          columnIndex,
+          direction: 'desc'
+        }];
+      } else {
+        tab.sortState = undefined;
+      }
+
+    } else {
+
+      tab.sortState = [{
+        columnIndex,
+        direction: 'asc'
+      }];
+    }
 
   } else {
 
-    tab.sortState =
-      undefined;
+    /*
+     * Shift-click adds a sort level, or cycles just that
+     * level asc -> desc -> removed while preserving the rest.
+     */
+    const nextSorts =
+      currentSorts.map(
+        sort => ({ ...sort })
+      );
 
+    if (existingIndex < 0) {
+      nextSorts.push({
+        columnIndex,
+        direction: 'asc'
+      });
+    } else if (
+      nextSorts[existingIndex].direction === 'asc'
+    ) {
+      nextSorts[existingIndex] = {
+        columnIndex,
+        direction: 'desc'
+      };
+    } else {
+      nextSorts.splice(
+        existingIndex,
+        1
+      );
+    }
+
+    tab.sortState =
+      nextSorts.length > 0
+        ? nextSorts
+        : undefined;
   }
 
 
-  invalidateDisplayRows(
-    tab
-  );
+  invalidateDisplayRows(tab);
 
 
   if (
@@ -5266,26 +5298,11 @@ async function sortResultColumn(
 
     await resultsView.webview
       .postMessage({
-
-        command:
-          'sortState',
-
+        command: 'sortState',
         id,
-
-        columnIndex:
-          tab.sortState
-            ?.columnIndex ??
-          -1,
-
-        direction:
-          tab.sortState
-            ?.direction ??
-          ''
-
+        sorts: tab.sortState ?? []
       });
-
   }
-
 }
 
 
@@ -7440,7 +7457,10 @@ function buildResultsHtml():
       id:
         activeResultId,
 
-      columnIndex
+      columnIndex,
+
+      multiSort:
+        event.shiftKey
     });
 
   }
@@ -9363,6 +9383,24 @@ function buildResultsHtml():
         'sortState'
       ) {
 
+        const sorts =
+          Array.isArray(message.sorts)
+            ? message.sorts
+            : [];
+
+        const superscript = value =>
+          String(value)
+            .replace(/0/g, '⁰')
+            .replace(/1/g, '¹')
+            .replace(/2/g, '²')
+            .replace(/3/g, '³')
+            .replace(/4/g, '⁴')
+            .replace(/5/g, '⁵')
+            .replace(/6/g, '⁶')
+            .replace(/7/g, '⁷')
+            .replace(/8/g, '⁸')
+            .replace(/9/g, '⁹');
+
         document
           .querySelectorAll(
             '.column-header'
@@ -9376,45 +9414,37 @@ function buildResultsHtml():
                 );
 
               if (!indicator) {
-
                 return;
-
               }
-
 
               const headerIndex =
                 Number(
                   header.dataset.columnIndex
                 );
 
+              const priority =
+                sorts.findIndex(
+                  sort =>
+                    sort.columnIndex === headerIndex
+                );
 
-              if (
-                headerIndex !==
-                message.columnIndex
-              ) {
-
-                /*
-                 * Keep an unsorted control visible on every other column.
-                 * Sorting one column must not remove the sort target from
-                 * the remaining headers.
-                 */
-                indicator.textContent =
-                  '△';
-
+              if (priority < 0) {
+                indicator.textContent = '△';
                 return;
-
               }
 
+              const sort =
+                sorts[priority];
+
+              const suffix =
+                sorts.length > 1
+                  ? superscript(priority + 1)
+                  : '';
 
               indicator.textContent =
-                message.direction ===
-                  'asc'
+                (sort.direction === 'asc'
                   ? '▲'
-                  : message.direction ===
-                      'desc'
-                    ? '▼'
-                    : '△';
-
+                  : '▼') + suffix;
             }
           );
 
@@ -9837,22 +9867,43 @@ function getSortIndicatorHtml(
 ): string {
 
 
-  if (
-    !tab.sortState ||
-    tab.sortState.columnIndex !==
-      columnIndex
-  ) {
+  const sorts =
+    tab.sortState ?? [];
 
+  const priority =
+    sorts.findIndex(
+      sort =>
+        sort.columnIndex === columnIndex
+    );
+
+
+  if (priority < 0) {
     return '&#9651;';
-
   }
 
 
-  return tab.sortState.direction ===
-    'asc'
-    ? '&#9650;'
-    : '&#9660;';
+  const indicator =
+    sorts[priority].direction === 'asc'
+      ? '&#9650;'
+      : '&#9660;';
 
+  if (sorts.length === 1) {
+    return indicator;
+  }
+
+  const superscripts =
+    ['⁰', '¹', '²', '³', '⁴', '⁵', '⁶', '⁷', '⁸', '⁹'];
+
+  const priorityText =
+    String(priority + 1)
+      .split('')
+      .map(
+        digit =>
+          superscripts[Number(digit)]
+      )
+      .join('');
+
+  return indicator + priorityText;
 }
 
 
