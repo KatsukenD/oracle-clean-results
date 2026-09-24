@@ -161,6 +161,7 @@ interface WebviewMessage {
     | 'resizeColumn'
     | 'autoFitColumn'
     | 'sortColumn'
+    | 'requestColumnDetails'
     | 'requestFilterOptions'
     | 'applyFilter'
     | 'setSelection'
@@ -371,6 +372,16 @@ async function handleWebviewMessage(
           message.id,
           message.columnIndex ?? -1,
           message.multiSort ?? false
+        );
+
+        break;
+
+
+      case 'requestColumnDetails':
+
+        await sendColumnDetails(
+          message.id,
+          message.columnIndex ?? -1
         );
 
         break;
@@ -3510,6 +3521,90 @@ function getDisplayRows(
 }
 
 
+async function sendColumnDetails(
+  id:
+    number,
+
+  columnIndex:
+    number
+): Promise<void> {
+
+
+  if (!resultsView) {
+
+    return;
+
+  }
+
+
+  const tab =
+    resultTabs.find(
+      item =>
+        item.id === id
+    );
+
+
+  if (!tab) {
+
+    return;
+
+  }
+
+
+  const columns =
+    getColumns(
+      tab
+    );
+
+
+  if (
+    columnIndex < 0 ||
+    columnIndex >= columns.length
+  ) {
+
+    return;
+
+  }
+
+
+  const column =
+    columns[
+      columnIndex
+    ];
+
+
+  await resultsView.webview
+    .postMessage({
+
+      command:
+        'columnDetails',
+
+      id,
+
+      columnIndex,
+
+      column: {
+        name:
+          column.name,
+
+        dataType:
+          column.dataType,
+
+        precision:
+          column.precision,
+
+        scale:
+          column.scale,
+
+        isNullable:
+          column.isNullable
+      }
+
+    });
+
+}
+
+
 async function sendFilterOptions(
   id:
     number,
@@ -6274,6 +6369,122 @@ function buildResultsHtml():
   }
 
 
+  .column-header-menu {
+    position:
+      fixed;
+
+    z-index:
+      10000;
+
+    min-width:
+      170px;
+
+    padding:
+      4px;
+
+    border:
+      1px solid
+      var(--vscode-panel-border);
+
+    border-radius:
+      4px;
+
+    color:
+      var(--vscode-menu-foreground);
+
+    background:
+      var(--vscode-menu-background);
+
+    box-shadow:
+      0 4px 14px rgba(0, 0, 0, 0.28);
+  }
+
+
+  .column-header-menu-item {
+    padding:
+      5px 8px;
+
+    border-radius:
+      3px;
+
+    cursor:
+      default;
+
+    white-space:
+      nowrap;
+  }
+
+
+  .column-header-menu-item:hover {
+    color:
+      var(--vscode-menu-selectionForeground);
+
+    background:
+      var(--vscode-menu-selectionBackground);
+  }
+
+
+  .column-details-card {
+    position:
+      fixed;
+
+    z-index:
+      10000;
+
+    min-width:
+      240px;
+
+    padding:
+      12px;
+
+    border:
+      1px solid
+      var(--vscode-panel-border);
+
+    border-radius:
+      4px;
+
+    color:
+      var(--vscode-foreground);
+
+    background:
+      var(--vscode-editorWidget-background);
+
+    box-shadow:
+      0 4px 14px rgba(0, 0, 0, 0.28);
+  }
+
+
+  .column-details-name {
+    margin-bottom:
+      10px;
+
+    font-weight:
+      600;
+  }
+
+
+  .column-details-row {
+    display:
+      grid;
+
+    grid-template-columns:
+      90px 1fr;
+
+    gap:
+      12px;
+
+    padding:
+      2px 0;
+  }
+
+
+  .column-details-label {
+    color:
+      var(--vscode-descriptionForeground);
+  }
+
+
   .filter-button {
     display:
       inline-flex;
@@ -7426,6 +7637,319 @@ function buildResultsHtml():
     renderFilterOptions();
 
     search.focus();
+
+  }
+
+
+  let pendingColumnDetailsPosition =
+    undefined;
+
+
+  function closeColumnHeaderMenu() {
+
+    document
+      .getElementById(
+        'column-header-menu'
+      )
+      ?.remove();
+
+  }
+
+
+  function closeColumnDetailsCard() {
+
+    document
+      .getElementById(
+        'column-details-card'
+      )
+      ?.remove();
+
+  }
+
+
+  function openColumnHeaderMenu(
+    event,
+    columnIndex
+  ) {
+
+    closeColumnHeaderMenu();
+    closeColumnDetailsCard();
+
+
+    const menu =
+      document.createElement(
+        'div'
+      );
+
+    menu.id =
+      'column-header-menu';
+
+    menu.className =
+      'column-header-menu';
+
+
+    const item =
+      document.createElement(
+        'div'
+      );
+
+    item.className =
+      'column-header-menu-item';
+
+    item.textContent =
+      'Column Details…';
+
+
+    item.addEventListener(
+      'click',
+      clickEvent => {
+
+        clickEvent.preventDefault();
+        clickEvent.stopPropagation();
+
+        pendingColumnDetailsPosition = {
+          x:
+            event.clientX + 12,
+
+          y:
+            event.clientY + 12
+        };
+
+        closeColumnHeaderMenu();
+
+
+        vscode.postMessage({
+          command:
+            'requestColumnDetails',
+
+          id:
+            activeResultId,
+
+          columnIndex
+        });
+
+      }
+    );
+
+
+    menu.appendChild(
+      item
+    );
+
+    document.body.appendChild(
+      menu
+    );
+
+
+    const rect =
+      menu.getBoundingClientRect();
+
+
+    menu.style.left =
+      Math.max(
+        4,
+        Math.min(
+          event.clientX,
+          window.innerWidth -
+            rect.width -
+            4
+        )
+      ) + 'px';
+
+    menu.style.top =
+      Math.max(
+        4,
+        Math.min(
+          event.clientY,
+          window.innerHeight -
+            rect.height -
+            4
+        )
+      ) + 'px';
+
+  }
+
+
+  function showColumnDetailsCard(
+    column
+  ) {
+
+    closeColumnDetailsCard();
+
+
+    const card =
+      document.createElement(
+        'div'
+      );
+
+    card.id =
+      'column-details-card';
+
+    card.className =
+      'column-details-card';
+
+
+    const name =
+      document.createElement(
+        'div'
+      );
+
+    name.className =
+      'column-details-name';
+
+    name.textContent =
+      column.name;
+
+    card.appendChild(
+      name
+    );
+
+
+    const details = [
+      [
+        'Datatype',
+        column.dataType || 'UNKNOWN'
+      ]
+    ];
+
+
+    if (
+      typeof column.precision ===
+      'number'
+    ) {
+
+      details.push([
+        'Precision',
+        String(
+          column.precision
+        )
+      ]);
+
+    }
+
+
+    if (
+      typeof column.scale ===
+      'number'
+    ) {
+
+      details.push([
+        'Scale',
+        String(
+          column.scale
+        )
+      ]);
+
+    }
+
+
+    if (
+      typeof column.isNullable ===
+      'number'
+    ) {
+
+      details.push([
+        'Nullable',
+        column.isNullable !== 0
+          ? 'Yes'
+          : 'No'
+      ]);
+
+    }
+
+
+    for (
+      const [
+        labelText,
+        valueText
+      ] of details
+    ) {
+
+      const row =
+        document.createElement(
+          'div'
+        );
+
+      row.className =
+        'column-details-row';
+
+
+      const label =
+        document.createElement(
+          'div'
+        );
+
+      label.className =
+        'column-details-label';
+
+      label.textContent =
+        labelText;
+
+
+      const value =
+        document.createElement(
+          'div'
+        );
+
+      value.textContent =
+        valueText;
+
+
+      row.appendChild(
+        label
+      );
+
+      row.appendChild(
+        value
+      );
+
+      card.appendChild(
+        row
+      );
+
+    }
+
+
+    document.body.appendChild(
+      card
+    );
+
+
+    const position =
+      pendingColumnDetailsPosition ?? {
+        x: 12,
+        y: 12
+      };
+
+    const rect =
+      card.getBoundingClientRect();
+
+
+    card.style.left =
+      Math.max(
+        4,
+        Math.min(
+          position.x,
+          window.innerWidth -
+            rect.width -
+            4
+        )
+      ) + 'px';
+
+    card.style.top =
+      Math.max(
+        4,
+        Math.min(
+          position.y,
+          window.innerHeight -
+            rect.height -
+            4
+        )
+      ) + 'px';
+
+
+    pendingColumnDetailsPosition =
+      undefined;
 
   }
 
@@ -9148,6 +9672,16 @@ function buildResultsHtml():
 
 
       if (
+        event.key === 'Escape'
+      ) {
+
+        closeColumnHeaderMenu();
+        closeColumnDetailsCard();
+
+      }
+
+
+      if (
         key === 'c' &&
         (
           event.ctrlKey ||
@@ -9235,6 +9769,71 @@ function buildResultsHtml():
     }
   );
 
+  document.addEventListener(
+    'mousedown',
+    event => {
+
+      if (
+        event.button !== 0
+      ) {
+
+        return;
+
+      }
+
+
+      const target =
+        event.target;
+
+
+      if (
+        !(target instanceof Node)
+      ) {
+
+        return;
+
+      }
+
+
+      const menu =
+        document.getElementById(
+          'column-header-menu'
+        );
+
+      const card =
+        document.getElementById(
+          'column-details-card'
+        );
+
+
+      if (
+        menu &&
+        !menu.contains(
+          target
+        )
+      ) {
+
+        closeColumnHeaderMenu();
+
+      }
+
+
+      if (
+        card &&
+        !card.contains(
+          target
+        )
+      ) {
+
+        closeColumnDetailsCard();
+
+      }
+
+    },
+    true
+  );
+
+
   document.addEventListener('copy', event => {
     if (!gridSelection || event.defaultPrevented) return;
     event.preventDefault();
@@ -9260,10 +9859,11 @@ function buildResultsHtml():
 
 
       /*
-       * macOS treats Ctrl + primary-click as a context-menu gesture.
-       * Ctrl/Cmd + header click is reserved by Clean Results for
-       * adding/removing columns from the selection, so suppress only
-       * that synthetic context menu. Genuine right-click remains intact.
+       * Column headers have their own small context menu.
+       *
+       * Ctrl/Cmd + primary-click remains reserved for column
+       * multi-selection on macOS, so only a genuine right-click
+       * opens Column Details.
        */
       const columnHeader =
         target.closest(
@@ -9280,6 +9880,28 @@ function buildResultsHtml():
 
         event.preventDefault();
         event.stopPropagation();
+        return;
+
+      }
+
+
+      if (
+        columnHeader &&
+        !target.closest('.sort-indicator') &&
+        !target.closest('.filter-button') &&
+        !target.closest('.column-resizer')
+      ) {
+
+        event.preventDefault();
+        event.stopPropagation();
+
+        openColumnHeaderMenu(
+          event,
+          Number(
+            columnHeader.dataset.columnIndex
+          )
+        );
+
         return;
 
       }
@@ -9328,6 +9950,20 @@ function buildResultsHtml():
         message.id !==
         activeResultId
       ) {
+
+        return;
+
+      }
+
+
+      if (
+        message.command ===
+        'columnDetails'
+      ) {
+
+        showColumnDetailsCard(
+          message.column
+        );
 
         return;
 
