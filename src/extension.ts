@@ -6455,6 +6455,15 @@ function buildResultsHtml():
   }
 
 
+  .column-details-heading {
+    margin-bottom:
+      8px;
+
+    font-weight:
+      600;
+  }
+
+
   .column-details-name {
     margin-bottom:
       10px;
@@ -6482,6 +6491,37 @@ function buildResultsHtml():
   .column-details-label {
     color:
       var(--vscode-descriptionForeground);
+  }
+
+
+  .column-details-copy {
+    margin-top:
+      12px;
+
+    padding:
+      4px 8px;
+
+    border:
+      1px solid
+      var(--vscode-button-border, transparent);
+
+    border-radius:
+      2px;
+
+    color:
+      var(--vscode-button-foreground);
+
+    background:
+      var(--vscode-button-background);
+
+    cursor:
+      pointer;
+  }
+
+
+  .column-details-copy:hover {
+    background:
+      var(--vscode-button-hoverBackground);
   }
 
 
@@ -7676,99 +7716,26 @@ function buildResultsHtml():
     closeColumnDetailsCard();
 
 
-    const menu =
-      document.createElement(
-        'div'
-      );
+    pendingColumnDetailsPosition = {
+      x:
+        event.clientX + 12,
 
-    menu.id =
-      'column-header-menu';
-
-    menu.className =
-      'column-header-menu';
+      y:
+        event.clientY + 12
+    };
 
 
-    const item =
-      document.createElement(
-        'div'
-      );
+    vscode.postMessage({
+      command:
+        'requestColumnDetails',
 
-    item.className =
-      'column-header-menu-item';
+      id:
+        activeResultId,
 
-    item.textContent =
-      'Column Details…';
-
-
-    item.addEventListener(
-      'click',
-      clickEvent => {
-
-        clickEvent.preventDefault();
-        clickEvent.stopPropagation();
-
-        pendingColumnDetailsPosition = {
-          x:
-            event.clientX + 12,
-
-          y:
-            event.clientY + 12
-        };
-
-        closeColumnHeaderMenu();
-
-
-        vscode.postMessage({
-          command:
-            'requestColumnDetails',
-
-          id:
-            activeResultId,
-
-          columnIndex
-        });
-
-      }
-    );
-
-
-    menu.appendChild(
-      item
-    );
-
-    document.body.appendChild(
-      menu
-    );
-
-
-    const rect =
-      menu.getBoundingClientRect();
-
-
-    menu.style.left =
-      Math.max(
-        4,
-        Math.min(
-          event.clientX,
-          window.innerWidth -
-            rect.width -
-            4
-        )
-      ) + 'px';
-
-    menu.style.top =
-      Math.max(
-        4,
-        Math.min(
-          event.clientY,
-          window.innerHeight -
-            rect.height -
-            4
-        )
-      ) + 'px';
+      columnIndex
+    });
 
   }
-
 
   function showColumnDetailsCard(
     column
@@ -7787,6 +7754,22 @@ function buildResultsHtml():
 
     card.className =
       'column-details-card';
+
+
+    const heading =
+      document.createElement(
+        'div'
+      );
+
+    heading.className =
+      'column-details-heading';
+
+    heading.textContent =
+      'Column Details';
+
+    card.appendChild(
+      heading
+    );
 
 
     const name =
@@ -7908,6 +7891,77 @@ function buildResultsHtml():
       );
 
     }
+
+
+    const copyButton =
+      document.createElement(
+        'button'
+      );
+
+    copyButton.className =
+      'column-details-copy';
+
+    copyButton.textContent =
+      'Copy to Clipboard';
+
+
+    copyButton.addEventListener(
+      'click',
+      async clickEvent => {
+
+        clickEvent.preventDefault();
+        clickEvent.stopPropagation();
+
+
+        const clipboardText = [
+          column.name,
+          ...details.map(
+            detail =>
+              detail[0] +
+              ': ' +
+              detail[1]
+          )
+        ]
+          .join(
+            '\\n'
+          );
+
+
+        await navigator.clipboard
+          .writeText(
+            clipboardText
+          );
+
+
+        copyButton.textContent =
+          'Copied!';
+
+
+        window.setTimeout(
+          () => {
+
+            if (
+              document.body.contains(
+                copyButton
+              )
+            ) {
+
+              copyButton.textContent =
+                'Copy to Clipboard';
+
+            }
+
+          },
+          1200
+        );
+
+      }
+    );
+
+
+    card.appendChild(
+      copyButton
+    );
 
 
     document.body.appendChild(
