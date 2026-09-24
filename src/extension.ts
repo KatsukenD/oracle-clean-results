@@ -143,6 +143,9 @@ interface ResultTab {
   selection?:
     GridSelection;
 
+  selectedColumns?:
+    number[];
+
 }
 
 
@@ -188,6 +191,7 @@ interface WebviewMessage {
   startColumn?: number;
   endColumn?: number;
   includeHeaders?: boolean;
+  selectedColumns?: number[];
 
 }
 
@@ -397,7 +401,8 @@ async function handleWebviewMessage(
           message.startRow ?? -1,
           message.endRow ?? -1,
           message.startColumn ?? -1,
-          message.endColumn ?? -1
+          message.endColumn ?? -1,
+          message.selectedColumns
         );
 
         break;
@@ -2277,6 +2282,9 @@ async function addQueryResult(
     activeTab.selection =
       undefined;
 
+    activeTab.selectedColumns =
+      undefined;
+
   } else {
 
     const newTab:
@@ -2839,6 +2847,9 @@ async function sendVirtualRows(
 
       selection:
         tab.selection ?? null,
+
+      selectedColumns:
+        tab.selectedColumns ?? [],
 
       rowsHtml
 
@@ -3741,14 +3752,37 @@ function normaliseGridSelection(selection: GridSelection, rowCount: number, colu
   };
 }
 
-function setResultSelection(id: number, startRow: number, endRow: number, startColumn: number, endColumn: number): void {
+function setResultSelection(
+  id: number,
+  startRow: number,
+  endRow: number,
+  startColumn: number,
+  endColumn: number,
+  selectedColumns?: number[]
+): void {
   const tab = resultTabs.find(item => item.id === id);
   if (!tab) return;
+
+  const columnCount = getColumns(tab).length;
+
   tab.selection = normaliseGridSelection(
     { startRow, endRow, startColumn, endColumn },
     getDisplayRows(tab).length,
-    getColumns(tab).length
+    columnCount
   );
+
+  const validColumns = (selectedColumns ?? [])
+    .filter((column, index, values) =>
+      Number.isInteger(column) &&
+      column >= 0 &&
+      column < columnCount &&
+      values.indexOf(column) === index
+    )
+    .sort((left, right) => left - right);
+
+  tab.selectedColumns = validColumns.length > 0
+    ? validColumns
+    : undefined;
 }
 
 function clipboardCellText(value: unknown, column: ColumnMetadata, nlsSettings: NlsSettings): string {
@@ -3772,15 +3806,23 @@ async function copyResultSelection(id: number, includeHeaders: boolean): Promise
   const s = normaliseGridSelection(tab.selection, rows.length, columns.length);
   if (!s) return;
 
+  const columnIndexes =
+    tab.selectedColumns && tab.selectedColumns.length > 0
+      ? tab.selectedColumns
+      : Array.from(
+          { length: s.endColumn - s.startColumn + 1 },
+          (_item, offset) => s.startColumn + offset
+        );
+
   const lines: string[] = [];
 
   if (includeHeaders) {
-    lines.push(columns.slice(s.startColumn, s.endColumn + 1).map(column => column.name).join('\t'));
+    lines.push(columnIndexes.map(index => columns[index].name).join('\t'));
   }
 
   for (let r = s.startRow; r <= s.endRow; r++) {
     const values: string[] = [];
-    for (let c = s.startColumn; c <= s.endColumn; c++) {
+    for (const c of columnIndexes) {
       const column = columns[c];
       values.push(clipboardCellText(getRowValue(rows[r], column.name), column, tab.nlsSettings));
     }
@@ -3918,9 +3960,10 @@ async function exportResults(
       1;
 
     const selectedColumns =
-      selection.endColumn -
+      tab.selectedColumns?.length ??
+      (selection.endColumn -
       selection.startColumn +
-      1;
+      1);
 
     scopeItems.push({
       label: '$(selection) Selected Cells',
@@ -4108,12 +4151,17 @@ function getExportData(
 
     if (selection) {
 
+      const selectedColumns =
+        tab.selectedColumns && tab.selectedColumns.length > 0
+          ? tab.selectedColumns.map(index => columns[index])
+          : columns.slice(
+              selection.startColumn,
+              selection.endColumn + 1
+            );
+
       return {
         columns:
-          columns.slice(
-            selection.startColumn,
-            selection.endColumn + 1
-          ),
+          selectedColumns,
         rows:
           displayRows.slice(
             selection.startRow,
@@ -6165,6 +6213,11 @@ function buildResultsHtml():
 
   .column-header {
     cursor:
+      default;
+  }
+
+  .sort-indicator {
+    cursor:
       pointer;
   }
 
@@ -6562,7 +6615,8 @@ function buildResultsHtml():
   }
 
   .data-cell.grid-selected,
-  .row-number.grid-selected {
+  .row-number.grid-selected,
+  .column-header.grid-selected {
     background: var(--vscode-list-activeSelectionBackground) !important;
     color: var(--vscode-list-activeSelectionForeground) !important;
   }
@@ -7364,6 +7418,8 @@ function buildResultsHtml():
     columnIndex
   ) {
 
+    event.stopPropagation();
+
     if (
       event.target &&
       event.target.classList &&
@@ -7868,6 +7924,9 @@ function buildResultsHtml():
   let pendingKeyboardVisibilityCheck = false;
   let isSelecting = false;
   let rowSelectionMode = false;
+  let columnSelectionMode = false;
+  let selectedColumns = new Set();
+  let columnSelectionAnchor = null;
 
 
   const AUTO_FETCH_THRESHOLD_ROWS =
@@ -7954,22 +8013,36 @@ function buildResultsHtml():
 
   function applySelectionHighlight() {
     const s = normaliseClientSelection(gridSelection);
+    const hasColumnSelection =
+      columnSelectionMode &&
+      selectedColumns.size > 0;
 
     document.querySelectorAll('.data-cell').forEach(cell => {
       const row = Number(cell.dataset.row);
       const column = Number(cell.dataset.column);
       cell.classList.toggle('grid-selected', Boolean(
-        s && row >= s.startRow && row <= s.endRow &&
-        column >= s.startColumn && column <= s.endColumn
+        hasColumnSelection
+          ? selectedColumns.has(column)
+          : s && row >= s.startRow && row <= s.endRow &&
+            column >= s.startColumn && column <= s.endColumn
       ));
     });
 
     document.querySelectorAll('.row-number[data-row-selector="true"]').forEach(cell => {
       const row = Number(cell.dataset.row);
       cell.classList.toggle('grid-selected', Boolean(
+        !hasColumnSelection &&
         s && row >= s.startRow && row <= s.endRow &&
         s.startColumn === 0 && s.endColumn === Math.max(0, getDataColumnCount() - 1)
       ));
+    });
+
+    document.querySelectorAll('.column-header').forEach(header => {
+      const column = Number(header.dataset.columnIndex);
+      header.classList.toggle(
+        'grid-selected',
+        hasColumnSelection && selectedColumns.has(column)
+      );
     });
   }
 
@@ -7979,7 +8052,10 @@ function buildResultsHtml():
     vscode.postMessage({
       command: 'setSelection', id: activeResultId,
       startRow: s.startRow, endRow: s.endRow,
-      startColumn: s.startColumn, endColumn: s.endColumn
+      startColumn: s.startColumn, endColumn: s.endColumn,
+      selectedColumns: columnSelectionMode
+        ? Array.from(selectedColumns).sort((left, right) => left - right)
+        : []
     });
   }
 
@@ -8038,6 +8114,11 @@ function buildResultsHtml():
 
     rowSelectionMode =
       false;
+    columnSelectionMode =
+      false;
+    selectedColumns.clear();
+    columnSelectionAnchor =
+      null;
 
     isSelecting =
       !extendSelection;
@@ -8161,6 +8242,11 @@ function buildResultsHtml():
 
     rowSelectionMode =
       true;
+    columnSelectionMode =
+      false;
+    selectedColumns.clear();
+    columnSelectionAnchor =
+      null;
 
     isSelecting =
       false;
@@ -8168,6 +8254,79 @@ function buildResultsHtml():
     applySelectionHighlight();
     commitGridSelection();
 
+  }
+
+
+  function selectWholeColumn(
+    column,
+    extendSelection = false,
+    toggleSelection = false
+  ) {
+    const grid = document.getElementById('grid-wrap');
+    if (!grid) return;
+
+    const rowCount = Number(grid.dataset.totalRows ?? '0');
+    const columnCount = getDataColumnCount();
+
+    if (rowCount <= 0 || column < 0 || column >= columnCount) {
+      return;
+    }
+
+    if (extendSelection && columnSelectionAnchor !== null) {
+      const start = Math.min(columnSelectionAnchor, column);
+      const end = Math.max(columnSelectionAnchor, column);
+      selectedColumns = new Set();
+      for (let index = start; index <= end; index++) {
+        selectedColumns.add(index);
+      }
+    } else if (toggleSelection) {
+      if (!columnSelectionMode) {
+        selectedColumns = new Set();
+      }
+
+      if (selectedColumns.has(column)) {
+        selectedColumns.delete(column);
+      } else {
+        selectedColumns.add(column);
+      }
+
+      columnSelectionAnchor = column;
+    } else {
+      selectedColumns = new Set([column]);
+      columnSelectionAnchor = column;
+    }
+
+    if (selectedColumns.size === 0) {
+      gridSelection = null;
+      columnSelectionMode = false;
+      columnSelectionAnchor = null;
+      applySelectionHighlight();
+      return;
+    }
+
+    const ordered = Array.from(selectedColumns).sort((left, right) => left - right);
+
+    gridSelection = {
+      startRow: 0,
+      endRow: rowCount - 1,
+      startColumn: ordered[0],
+      endColumn: ordered[ordered.length - 1]
+    };
+
+    selectionAnchor = {
+      row: 0,
+      column: ordered[0]
+    };
+    activeCell = {
+      row: 0,
+      column
+    };
+    rowSelectionMode = false;
+    columnSelectionMode = true;
+    isSelecting = false;
+
+    applySelectionHighlight();
+    commitGridSelection();
   }
 
 
@@ -8397,6 +8556,11 @@ function buildResultsHtml():
 
       rowSelectionMode =
         false;
+      columnSelectionMode =
+        false;
+      selectedColumns.clear();
+      columnSelectionAnchor =
+        null;
 
       activeCell = {
         row:
@@ -8434,6 +8598,11 @@ function buildResultsHtml():
 
       rowSelectionMode =
         false;
+      columnSelectionMode =
+        false;
+      selectedColumns.clear();
+      columnSelectionAnchor =
+        null;
 
       gridSelection = {
         startRow:
@@ -8646,6 +8815,16 @@ function buildResultsHtml():
       'px"></td></tr>';
     if (message.selection) {
       gridSelection = message.selection;
+
+      if (Array.isArray(message.selectedColumns) && message.selectedColumns.length > 0) {
+        selectedColumns = new Set(message.selectedColumns);
+        columnSelectionMode = true;
+        columnSelectionAnchor = message.selectedColumns[0];
+      } else if (columnSelectionMode) {
+        selectedColumns.clear();
+        columnSelectionMode = false;
+        columnSelectionAnchor = null;
+      }
 
       if (!activeCell) {
         activeCell = {
@@ -8870,6 +9049,24 @@ function buildResultsHtml():
     const target = event.target;
     if (!(target instanceof Element)) return;
 
+    const columnHeader = target.closest('.column-header');
+    if (columnHeader &&
+        !target.closest('.sort-indicator') &&
+        !target.closest('.filter-button') &&
+        !target.closest('.column-resizer')) {
+      event.preventDefault();
+
+      const grid = document.getElementById('grid-wrap');
+      grid?.focus();
+
+      selectWholeColumn(
+        Number(columnHeader.dataset.columnIndex),
+        event.shiftKey,
+        event.ctrlKey || event.metaKey
+      );
+      return;
+    }
+
     const rowSelector = target.closest('.row-number[data-row-selector="true"]');
     if (rowSelector) {
       event.preventDefault();
@@ -9042,6 +9239,32 @@ function buildResultsHtml():
       }
 
 
+      /*
+       * macOS treats Ctrl + primary-click as a context-menu gesture.
+       * Ctrl/Cmd + header click is reserved by Clean Results for
+       * adding/removing columns from the selection, so suppress only
+       * that synthetic context menu. Genuine right-click remains intact.
+       */
+      const columnHeader =
+        target.closest(
+          '.column-header'
+        );
+
+      if (
+        columnHeader &&
+        (event.ctrlKey || event.metaKey) &&
+        !target.closest('.sort-indicator') &&
+        !target.closest('.filter-button') &&
+        !target.closest('.column-resizer')
+      ) {
+
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+
+      }
+
+
       const resultCell =
         target.closest(
           '.data-cell, .row-number[data-row-selector="true"]'
@@ -9170,8 +9393,13 @@ function buildResultsHtml():
                 message.columnIndex
               ) {
 
+                /*
+                 * Keep an unsorted control visible on every other column.
+                 * Sorting one column must not remove the sort target from
+                 * the remaining headers.
+                 */
                 indicator.textContent =
-                  '';
+                  '△';
 
                 return;
 
@@ -9185,7 +9413,7 @@ function buildResultsHtml():
                   : message.direction ===
                       'desc'
                     ? '▼'
-                    : '';
+                    : '△';
 
             }
           );
@@ -9450,6 +9678,11 @@ function buildResultsHtml():
 
       rowSelectionMode =
         false;
+      columnSelectionMode =
+        false;
+      selectedColumns.clear();
+      columnSelectionAnchor =
+        null;
 
       isSelecting =
         false;
@@ -9610,7 +9843,7 @@ function getSortIndicatorHtml(
       columnIndex
   ) {
 
-    return '';
+    return '&#9651;';
 
   }
 
@@ -9701,7 +9934,7 @@ function buildGridHtml(
           column,
           columnIndex
         ) =>
-          `<th class="column-header" data-column-index="${columnIndex}" onclick="sortColumn(event, ${columnIndex})" title="Click heading to sort"><span class="column-title">${escapeHtml(column.name)}</span><span class="sort-indicator">${getSortIndicatorHtml(tab, columnIndex)}</span><button class="filter-button ${tab.filters?.has(columnIndex) ? 'active' : ''}" data-filter-column="${columnIndex}" onclick="openFilterMenu(event, ${columnIndex})" title="Filter ${escapeHtml(column.name)}">&#9662;</button><span class="column-resizer" onmousedown="startColumnResize(event, ${columnIndex})" ondblclick="autoFitColumn(event, ${columnIndex})"></span></th>`
+          `<th class="column-header" data-column-index="${columnIndex}" title="Click heading to select column"><span class="column-title">${escapeHtml(column.name)}</span><span class="sort-indicator" onclick="sortColumn(event, ${columnIndex})" title="Sort ${escapeHtml(column.name)}">${getSortIndicatorHtml(tab, columnIndex)}</span><button class="filter-button ${tab.filters?.has(columnIndex) ? 'active' : ''}" data-filter-column="${columnIndex}" onclick="openFilterMenu(event, ${columnIndex})" title="Filter ${escapeHtml(column.name)}">&#9662;</button><span class="column-resizer" onmousedown="startColumnResize(event, ${columnIndex})" ondblclick="autoFitColumn(event, ${columnIndex})"></span></th>`
       )
       .join('');
 
