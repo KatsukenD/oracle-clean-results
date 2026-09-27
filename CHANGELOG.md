@@ -4,6 +4,10 @@ All notable changes to **Oracle Clean Results** are documented in this file.
 
 Oracle Clean Results is currently under active development. Early releases focus on building and refining the core query-results workflow.
 
+## 0.1.0 — First Public Release
+
+Oracle Clean Results is now ready for its first public preview release.
+
 ## 0.0.18 — Settings
 
 - Added configurable NULL display text.
