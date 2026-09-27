@@ -2,13 +2,30 @@
   "name": "oracle-clean-results",
   "displayName": "Oracle Clean Results",
   "description": "A companion results viewer for Oracle SQL Developer for VS Code with clean NULL handling, NLS-aware formatting, sorting, filtering, large result sets, exports, and query provenance.",
-  "version": "0.0.17",
+  "version": "0.0.18",
   "repository": {
-  "type": "git",
-  "url": "https://github.com/KatsukenD/oracle-clean-results.git"
+    "type": "git",
+    "url": "https://github.com/KatsukenD/oracle-clean-results.git"
   },
+  "bugs": {
+    "url": "https://github.com/KatsukenD/oracle-clean-results/issues"
+  },
+  "homepage": "https://github.com/KatsukenD/oracle-clean-results#readme",
   "license": "MIT",
-  "publisher": "local",
+  "publisher": "KatsukenD",
+  "pricing": "Free",
+  "preview": true,
+  "icon": "resources/icon.png",
+  "keywords": [
+    "oracle",
+    "sql",
+    "plsql",
+    "database",
+    "sql developer",
+    "query",
+    "results",
+    "result grid"
+  ],
   "engines": {
     "vscode": ">=1.101.0"
   },
@@ -20,6 +37,35 @@
   ],
   "main": "./out/extension.js",
   "contributes": {
+    "configuration": {
+      "title": "Oracle Clean Results",
+      "properties": {
+        "oracleCleanResults.nullDisplayText": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Text used to display database NULL values in the results grid. Leave blank to display NULL values as empty cells. This affects display only."
+        },
+        "oracleCleanResults.fetchSize": {
+          "type": "integer",
+          "default": 500,
+          "minimum": 1,
+          "maximum": 10000,
+          "description": "Number of rows fetched from Oracle at a time. Applies to newly executed queries."
+        },
+        "oracleCleanResults.autoFetchOnScroll": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically fetch the next page of results when scrolling near the end of the currently fetched rows."
+        },
+        "oracleCleanResults.maxAutoColumnWidth": {
+          "type": "integer",
+          "default": 400,
+          "minimum": 64,
+          "maximum": 2000,
+          "description": "Maximum automatic column width in pixels. Columns can still be manually resized beyond this value."
+        }
+      }
+    },
     "commands": [
       {
         "command": "oracleCleanResults.runQuery",
