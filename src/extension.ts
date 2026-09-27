@@ -22,8 +22,51 @@ const RESULTS_VIEW_ID =
 const RESULTS_CONTAINER_ID =
   'oracleCleanResultsContainer';
 
-const PAGE_SIZE =
+const DEFAULT_FETCH_SIZE =
   500;
+
+const DEFAULT_MAX_AUTO_COLUMN_WIDTH =
+  400;
+
+function getCleanResultsConfiguration():
+  vscode.WorkspaceConfiguration {
+
+  return vscode.workspace.getConfiguration(
+    'oracleCleanResults'
+  );
+}
+
+function getNullDisplayText(): string {
+
+  return getCleanResultsConfiguration().get<string>(
+    'nullDisplayText',
+    ''
+  );
+}
+
+function getFetchSize(): number {
+
+  return getCleanResultsConfiguration().get<number>(
+    'fetchSize',
+    DEFAULT_FETCH_SIZE
+  );
+}
+
+function getAutoFetchOnScroll(): boolean {
+
+  return getCleanResultsConfiguration().get<boolean>(
+    'autoFetchOnScroll',
+    true
+  );
+}
+
+function getMaxAutoColumnWidth(): number {
+
+  return getCleanResultsConfiguration().get<number>(
+    'maxAutoColumnWidth',
+    DEFAULT_MAX_AUTO_COLUMN_WIDTH
+  );
+}
 
 interface NlsSettings {
 
@@ -490,6 +533,25 @@ export async function activate(
   );
 
 
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration(
+      event => {
+
+        if (
+          event.affectsConfiguration(
+            'oracleCleanResults'
+          )
+        ) {
+
+          renderResultsView();
+
+        }
+
+      }
+    )
+  );
+
+
   const oracleExtension =
     vscode.extensions
       .getExtension<Api>(
@@ -876,7 +938,7 @@ const executableSql =
 
         {
           pageSize:
-            PAGE_SIZE
+            getFetchSize()
         }
 
       );
@@ -7018,6 +7080,10 @@ function buildResultsHtml():
     ${activeTab.id};
 
 
+  const autoFetchOnScroll =
+    ${getAutoFetchOnScroll()};
+
+
   function selectTab(
     id
   ) {
@@ -8204,7 +8270,7 @@ function buildResultsHtml():
   function ensureHeaderColumnWidths() {
 
     const MAX_AUTO_COLUMN_WIDTH =
-      400;
+      ${getMaxAutoColumnWidth()};
 
     const headers =
       document.querySelectorAll(
@@ -8539,6 +8605,7 @@ function buildResultsHtml():
   ) {
 
     if (
+      !autoFetchOnScroll ||
       !hasMoreRows ||
       isFetchingRows ||
       automaticFetchRequested
@@ -10800,7 +10867,7 @@ function calculateColumnWidths(
   const sampleRows =
     rows.slice(
       0,
-      PAGE_SIZE
+      getFetchSize()
     );
 
   return columns.map(
@@ -10829,7 +10896,7 @@ function calculateColumnWidth(
     64;
 
   const MAX_COLUMN_WIDTH =
-    400;
+    getMaxAutoColumnWidth();
 
   const APPROX_CHARACTER_WIDTH =
     7;
@@ -11100,7 +11167,9 @@ function formatCell(
     value === undefined
   ) {
 
-    return '';
+    return escapeHtml(
+      getNullDisplayText()
+    );
 
   }
 
