@@ -133,6 +133,32 @@ interface GridSelection {
   endColumn: number;
 }
 
+interface OracleQueryError {
+
+  code?:
+    string;
+
+  message:
+    string;
+
+  action?:
+    string;
+
+  causeMessage?:
+    string;
+
+  uri?:
+    string;
+
+  line?:
+    number;
+
+  column?:
+    number;
+
+}
+
+
 interface ResultTab {
 
   id:
@@ -189,6 +215,15 @@ interface ResultTab {
   selectedColumns?:
     number[];
 
+  error?:
+    OracleQueryError;
+
+  sourceDocumentUri?:
+    string;
+
+  sourceStartOffset?:
+    number;
+
 }
 
 
@@ -210,6 +245,8 @@ interface WebviewMessage {
     | 'setSelection'
     | 'copySelection'
     | 'copyQuery'
+    | 'openErrorHelp'
+    | 'goToError'
     | 'exportResults';
 
   id:
@@ -253,6 +290,10 @@ let activeResultId:
 let nextResultNumber =
   1;
 
+const outputChannel =
+  vscode.window.createOutputChannel(
+    'Oracle Clean Results'
+  );
 
 class ResultsViewProvider
   implements vscode.WebviewViewProvider {
@@ -476,6 +517,24 @@ async function handleWebviewMessage(
       case 'copyQuery':
 
         await copyResultQuery(
+          message.id
+        );
+
+        break;
+
+
+      case 'openErrorHelp':
+
+        await openResultErrorHelp(
+          message.id
+        );
+
+        break;
+
+
+      case 'goToError':
+
+        await goToResultError(
           message.id
         );
 
@@ -758,10 +817,20 @@ if (
   }
 
 
+  const statementOffset =
+    findStatementSourceOffset(
+      documentSql,
+      sql,
+      cursorOffset
+    );
+
+
   await executeCleanQuery(
     session,
     sql,
-    false
+    false,
+    editor.document.uri.toString(),
+    statementOffset
   );
 
 
@@ -859,16 +928,41 @@ if (
    * Every subsequent query is forced into
    * a new results tab.
    */
+  let selectionSearchOffset =
+    0;
+
+
   for (
     let index = 0;
     index < statements.length;
     index++
   ) {
 
+    const statement =
+      statements[index];
+
+    const relativeOffset =
+      selectedSql.indexOf(
+        statement,
+        selectionSearchOffset
+      );
+
+    const statementOffset =
+      relativeOffset >= 0
+        ? editor.document.offsetAt(selection.start) + relativeOffset
+        : undefined;
+
+    if (relativeOffset >= 0) {
+      selectionSearchOffset =
+        relativeOffset + statement.length;
+    }
+
     await executeCleanQuery(
       session,
-      statements[index],
-      index > 0
+      statement,
+      index > 0,
+      editor.document.uri.toString(),
+      statementOffset
     );
 
   }
@@ -903,7 +997,13 @@ async function executeCleanQuery(
     string,
 
   forceNewTab:
-    boolean
+    boolean,
+
+  sourceDocumentUri?:
+    string,
+
+  sourceStatementOffset?:
+    number
 ): Promise<void> {
 
 
@@ -920,13 +1020,27 @@ async function executeCleanQuery(
   const startTime =
     Date.now();
 
-  try {
 
-const executableSql =
-  removeLeadingComments(
-    sql
-  )
-    .trim();
+  const executableSql =
+    removeLeadingComments(
+      sql
+    )
+      .trim();
+
+
+  const executableOffsetWithinStatement =
+    sql.indexOf(
+      executableSql
+    );
+
+  const sourceStartOffset =
+    sourceStatementOffset !== undefined &&
+    executableOffsetWithinStatement >= 0
+      ? sourceStatementOffset + executableOffsetWithinStatement
+      : undefined;
+
+
+  try {
 
     resultSet =
       await session.executeQuery(
@@ -1025,6 +1139,93 @@ const executableSql =
       undefined;
 
 
+  } catch (error) {
+
+    outputChannel.appendLine(
+      '--- Oracle executeQuery error ---'
+    );
+
+    outputChannel.appendLine(
+      `Type: ${typeof error}`
+    );
+
+    outputChannel.appendLine(
+      `String: ${String(error)}`
+    );
+
+    if (
+      error &&
+      typeof error === 'object'
+    ) {
+
+      const properties =
+        Object.getOwnPropertyNames(error);
+
+      outputChannel.appendLine(
+        `Properties: ${properties.join(', ')}`
+      );
+
+      for (
+        const property of properties
+      ) {
+
+        let value:
+          unknown;
+
+        try {
+
+          value =
+            (error as Record<string, unknown>)[
+              property
+            ];
+
+        } catch {
+
+          value =
+            '[Unable to read property]';
+
+        }
+
+        outputChannel.appendLine(
+          `${property}: ${
+            typeof value === 'object'
+              ? JSON.stringify(value)
+              : String(value)
+          }`
+        );
+
+      }
+
+    }
+
+    outputChannel.appendLine(
+      '-------------------------------'
+    );
+
+
+    const oracleError =
+      getOracleQueryError(
+        error
+      );
+
+
+    if (oracleError) {
+
+      await addQueryError(
+        executableSql,
+        oracleError,
+        forceNewTab,
+        sourceDocumentUri,
+        sourceStartOffset
+      );
+
+      return;
+
+    }
+
+
+    throw error;
+
   } finally {
 
     if (resultSet) {
@@ -1034,6 +1235,330 @@ const executableSql =
     }
 
   }
+
+}
+
+
+function getOracleQueryError(
+  error:
+    unknown
+): OracleQueryError | undefined {
+
+
+  if (
+    !error ||
+    typeof error !== 'object'
+  ) {
+
+    return undefined;
+
+  }
+
+
+  const candidate =
+    error as Record<string, unknown>;
+
+
+  if (
+    typeof candidate.message !== 'string'
+  ) {
+
+    return undefined;
+
+  }
+
+
+  const code =
+    typeof candidate.code === 'string'
+      ? candidate.code
+      : undefined;
+
+
+  if (
+    !code?.startsWith('ORA-')
+  ) {
+
+    return undefined;
+
+  }
+
+
+  return {
+    code,
+    message:
+      candidate.message,
+    action:
+      typeof candidate.action === 'string'
+        ? candidate.action
+        : undefined,
+    causeMessage:
+      typeof candidate.causeMessage === 'string'
+        ? candidate.causeMessage
+        : undefined,
+    uri:
+      typeof candidate.uri === 'string'
+        ? candidate.uri
+        : undefined,
+    line:
+      typeof candidate.line === 'number'
+        ? candidate.line
+        : undefined,
+    column:
+      typeof candidate.column === 'number'
+        ? candidate.column
+        : undefined
+  };
+
+}
+
+
+async function addQueryError(
+  sql:
+    string,
+
+  error:
+    OracleQueryError,
+
+  forceNewTab:
+    boolean,
+
+  sourceDocumentUri?:
+    string,
+
+  sourceStartOffset?:
+    number
+): Promise<void> {
+
+
+  const activeTab =
+    getActiveResultTab();
+
+
+  const errorTabValues = {
+    sql,
+    rows:
+      [] as Array<Record<string, unknown>>,
+    metadata:
+      [] as ColumnMetadata[],
+    nlsSettings: {
+      dateFormat:
+        'DD-MON-RR',
+      timestampFormat:
+        'DD-MON-RR HH.MI.SSXFF AM'
+    },
+    resultSet:
+      undefined,
+    hasMore:
+      false,
+    isFetching:
+      false,
+    elapsedMs:
+      0,
+    columnWidths:
+      [] as number[],
+    sortState:
+      undefined,
+    displayRowsCache:
+      undefined,
+    filters:
+      undefined,
+    filterKeyCache:
+      undefined,
+    selection:
+      undefined,
+    selectedColumns:
+      undefined,
+    error,
+    sourceDocumentUri,
+    sourceStartOffset
+  };
+
+
+  if (
+    activeTab &&
+    !activeTab.pinned &&
+    !forceNewTab
+  ) {
+
+    await closeTabResultSet(
+      activeTab
+    );
+
+    Object.assign(
+      activeTab,
+      errorTabValues
+    );
+
+    activeTab.title =
+      `Error ${activeTab.id}`;
+
+  } else {
+
+    const id =
+      nextResultNumber++;
+
+    const newTab:
+      ResultTab = {
+        id,
+        title:
+          `Error ${id}`,
+        pinned:
+          false,
+        ...errorTabValues
+      };
+
+    resultTabs.push(
+      newTab
+    );
+
+    activeResultId =
+      newTab.id;
+
+  }
+
+
+  await vscode.commands
+    .executeCommand(
+      `workbench.view.extension.${RESULTS_CONTAINER_ID}`
+    );
+
+
+  renderResultsView();
+
+}
+
+
+async function openResultErrorHelp(
+  id:
+    number
+): Promise<void> {
+
+
+  const tab =
+    resultTabs.find(
+      item =>
+        item.id === id
+    );
+
+
+  const uri =
+    tab?.error?.uri;
+
+
+  if (!uri) {
+    return;
+  }
+
+
+  await vscode.env.openExternal(
+    vscode.Uri.parse(uri)
+  );
+
+}
+
+
+async function goToResultError(
+  id:
+    number
+): Promise<void> {
+
+
+  const tab =
+    resultTabs.find(
+      item =>
+        item.id === id
+    );
+
+
+  if (
+    !tab?.error ||
+    !tab.sourceDocumentUri ||
+    tab.sourceStartOffset === undefined ||
+    tab.error.line === undefined ||
+    tab.error.column === undefined
+  ) {
+
+    void vscode.window.showInformationMessage(
+      'Oracle Clean Results: The source location for this error is not available.'
+    );
+
+    return;
+
+  }
+
+
+  const document =
+    await vscode.workspace.openTextDocument(
+      vscode.Uri.parse(
+        tab.sourceDocumentUri
+      )
+    );
+
+
+  const sqlLines =
+    tab.sql.split(/\r?\n/);
+
+  const errorLineIndex =
+    Math.max(
+      0,
+      Math.min(
+        tab.error.line - 1,
+        sqlLines.length - 1
+      )
+    );
+
+  let relativeOffset =
+    0;
+
+  for (
+    let index = 0;
+    index < errorLineIndex;
+    index++
+  ) {
+    relativeOffset +=
+      sqlLines[index].length + 1;
+  }
+
+  relativeOffset +=
+    Math.max(
+      0,
+      tab.error.column - 1
+    );
+
+
+  const absoluteOffset =
+    Math.min(
+      tab.sourceStartOffset + relativeOffset,
+      document.getText().length
+    );
+
+  const position =
+    document.positionAt(
+      absoluteOffset
+    );
+
+  const editor =
+    await vscode.window.showTextDocument(
+      document,
+      {
+        preserveFocus: false,
+        preview: false
+      }
+    );
+
+  editor.selection =
+    new vscode.Selection(
+      position,
+      position
+    );
+
+  editor.revealRange(
+    new vscode.Range(
+      position,
+      position
+    ),
+    vscode.TextEditorRevealType.InCenterIfOutsideViewport
+  );
 
 }
 
@@ -1453,6 +1978,43 @@ function findStatementAtOffset(
   return undefined;
 
 }
+
+function findStatementSourceOffset(
+  documentSql:
+    string,
+
+  sql:
+    string,
+
+  cursorOffset:
+    number
+): number | undefined {
+
+
+  const beforeCursor =
+    documentSql.lastIndexOf(
+      sql,
+      cursorOffset
+    );
+
+
+  if (beforeCursor >= 0) {
+    return beforeCursor;
+  }
+
+
+  const anywhere =
+    documentSql.indexOf(
+      sql
+    );
+
+
+  return anywhere >= 0
+    ? anywhere
+    : undefined;
+
+}
+
 
 function splitSelectedStatements(
   text:
@@ -2310,6 +2872,18 @@ async function addQueryResult(
       activeTab
     );
 
+
+    activeTab.title =
+      `Results ${activeTab.id}`;
+
+    activeTab.error =
+      undefined;
+
+    activeTab.sourceDocumentUri =
+      undefined;
+
+    activeTab.sourceStartOffset =
+      undefined;
 
     activeTab.sql =
       sql;
@@ -5841,9 +6415,11 @@ function buildResultsHtml():
       : `
         <span id="fetch-status">
           ${
-            activeTab.hasMore
-              ? 'More rows available'
-              : 'All rows fetched'
+            activeTab.error
+              ? 'Query failed'
+              : activeTab.hasMore
+                ? 'More rows available'
+                : 'All rows fetched'
           }
         </span>
       `;
@@ -6997,11 +7573,17 @@ function buildResultsHtml():
 
   <div class="status">
 
+    ${
+      activeTab.error
+        ? ''
+        : `
     <span id="row-count">
       ${activeTab.rows.length}
       row${activeTab.rows.length === 1 ? '' : 's'}
       fetched
     </span>
+        `
+    }
 
     ${fetchStatusHtml}
 
@@ -7195,6 +7777,34 @@ function buildResultsHtml():
     vscode.postMessage({
       command:
         'copyQuery',
+
+      id
+    });
+
+  }
+
+
+  function openErrorHelp(
+    id
+  ) {
+
+    vscode.postMessage({
+      command:
+        'openErrorHelp',
+
+      id
+    });
+
+  }
+
+
+  function goToError(
+    id
+  ) {
+
+    vscode.postMessage({
+      command:
+        'goToError',
 
       id
     });
@@ -10515,6 +11125,57 @@ function buildFetchControlsHtml(
 ): string {
 
 
+  if (tab.error) {
+
+    return `
+<div class="fetch-controls" id="fetch-controls">
+
+  ${
+    tab.sourceDocumentUri &&
+    tab.sourceStartOffset !== undefined &&
+    tab.error.line !== undefined &&
+    tab.error.column !== undefined
+      ? `
+  <button
+    class="fetch-button secondary"
+    onclick="goToError(${tab.id})"
+    title="Go to the error location in the SQL editor"
+  >
+    Go to Error
+  </button>
+      `
+      : ''
+  }
+
+  <button
+    class="fetch-button secondary"
+    id="view-query-button"
+    onclick="showQuery()"
+    title="View the SQL statement that produced this error"
+  >
+    View Query
+  </button>
+
+  ${
+    tab.error.uri
+      ? `
+  <button
+    class="fetch-button secondary"
+    onclick="openErrorHelp(${tab.id})"
+    title="Open Oracle help for this error"
+  >
+    Oracle Error Help
+  </button>
+      `
+      : ''
+  }
+
+</div>
+`;
+
+  }
+
+
   const fetchButtons =
     tab.hasMore
       ? `
@@ -10664,10 +11325,151 @@ function getSortIndicatorHtml(
 }
 
 
+function buildQueryErrorHtml(
+  tab:
+    ResultTab
+): string {
+
+
+  const error =
+    tab.error;
+
+
+  if (!error) {
+    return '';
+  }
+
+
+  const sqlLines =
+    tab.sql.split(/\r?\n/);
+
+  const errorLine =
+    error.line && error.line > 0
+      ? error.line
+      : undefined;
+
+  const errorColumn =
+    error.column && error.column > 0
+      ? error.column
+      : undefined;
+
+  let locationHtml =
+    '';
+
+
+  if (errorLine || errorColumn) {
+
+    const locationText =
+      [
+        errorLine
+          ? `Line ${errorLine}`
+          : undefined,
+        errorColumn
+          ? `Column ${errorColumn}`
+          : undefined
+      ]
+        .filter(Boolean)
+        .join(', ');
+
+    let snippetHtml =
+      '';
+
+
+    if (
+      errorLine &&
+      errorLine <= sqlLines.length
+    ) {
+
+      const lineText =
+        sqlLines[errorLine - 1];
+
+      const caret =
+        errorColumn
+          ? `${' '.repeat(Math.max(0, errorColumn - 1))}^`
+          : '';
+
+      snippetHtml = `
+        <pre style="margin:10px 0 0; padding:12px 14px; overflow:auto; user-select:text; font-family:var(--vscode-editor-font-family); font-size:13px; line-height:1.5; background:var(--vscode-textCodeBlock-background); border:1px solid var(--vscode-panel-border); border-radius:5px;">${escapeHtml(lineText)}${caret ? `\n${escapeHtml(caret)}` : ''}</pre>
+      `;
+
+    }
+
+
+    locationHtml = `
+      <section style="margin-top:20px; padding:14px 16px; border:1px solid var(--vscode-panel-border); border-radius:5px; background:var(--vscode-editor-background);">
+        <div style="font-size:12px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; color:var(--vscode-descriptionForeground); margin-bottom:6px;">Location</div>
+        <div style="font-weight:600;">${escapeHtml(locationText)}</div>
+        ${snippetHtml}
+      </section>
+    `;
+
+  }
+
+
+  const causeHtml =
+    error.causeMessage
+      ? `
+        <section style="margin-top:20px;">
+          <div style="font-size:12px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; color:var(--vscode-descriptionForeground); margin-bottom:7px;">Cause</div>
+          <div style="white-space:pre-wrap; user-select:text; line-height:1.45;">${escapeHtml(error.causeMessage)}</div>
+        </section>
+      `
+      : '';
+
+
+  const actionHtml =
+    error.action
+      ? `
+        <section style="margin-top:20px;">
+          <div style="font-size:12px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; color:var(--vscode-descriptionForeground); margin-bottom:7px;">Action</div>
+          <div style="white-space:pre-wrap; user-select:text; line-height:1.45;">${escapeHtml(error.action)}</div>
+        </section>
+      `
+      : '';
+
+
+  return `
+    <div style="height:calc(100vh - 66px); overflow:auto; padding:24px 28px;">
+      <div style="max-width:820px;">
+
+        <div style="font-size:12px; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; color:var(--vscode-errorForeground); margin-bottom:8px;">
+          Query Error
+        </div>
+
+        <div style="font-size:20px; font-weight:600; line-height:1.25; margin-bottom:5px; user-select:text;">
+          ${escapeHtml(error.code ?? 'Oracle Error')}
+        </div>
+
+        <div style="font-size:14px; line-height:1.45; user-select:text;">
+          ${escapeHtml(error.message)}
+        </div>
+
+        ${locationHtml}
+        ${causeHtml}
+        ${actionHtml}
+
+        <div style="margin-top:26px; padding-top:12px; border-top:1px solid var(--vscode-panel-border); font-size:12px; line-height:1.4; color:var(--vscode-descriptionForeground);">
+          Need more detail? See <strong>Oracle Clean Results</strong> in the Output panel for the full Oracle diagnostic.
+        </div>
+
+      </div>
+    </div>
+  `;
+
+}
+
+
 function buildGridHtml(
   tab:
     ResultTab
 ): string {
+
+
+  if (tab.error) {
+    return buildQueryErrorHtml(
+      tab
+    );
+  }
 
 
   const columns =
