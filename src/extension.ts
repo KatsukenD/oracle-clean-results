@@ -1216,7 +1216,8 @@ async function executeCleanQuery(
         oracleError,
         forceNewTab,
         sourceDocumentUri,
-        sourceStartOffset
+        sourceStartOffset,
+        nlsSettings
       );
 
       return;
@@ -1326,7 +1327,10 @@ async function addQueryError(
     string,
 
   sourceStartOffset?:
-    number
+    number,
+
+  nlsSettings?:
+    NlsSettings
 ): Promise<void> {
 
 
@@ -1340,12 +1344,13 @@ async function addQueryError(
       [] as Array<Record<string, unknown>>,
     metadata:
       [] as ColumnMetadata[],
-    nlsSettings: {
-      dateFormat:
-        'DD-MON-RR',
-      timestampFormat:
-        'DD-MON-RR HH.MI.SSXFF AM'
-    },
+    nlsSettings:
+      nlsSettings ?? {
+        dateFormat:
+          'DD-MON-RR',
+        timestampFormat:
+          'DD-MON-RR HH.MI.SSXFF AM'
+      },
     resultSet:
       undefined,
     hasMore:
@@ -6702,6 +6707,88 @@ function buildResultsHtml():
   }
 
 
+  .display-info-toggle {
+    border:
+      0;
+
+    padding:
+      0;
+
+    color:
+      var(--vscode-textLink-foreground);
+
+    background:
+      transparent;
+
+    font:
+      inherit;
+
+    cursor:
+      pointer;
+  }
+
+
+  .display-info-toggle:hover {
+    color:
+      var(--vscode-textLink-activeForeground);
+
+    text-decoration:
+      underline;
+  }
+
+
+  .display-info {
+    display:
+      none;
+
+    padding:
+      8px 10px;
+
+    border-bottom:
+      1px solid
+      var(--vscode-panel-border);
+
+    color:
+      var(--vscode-descriptionForeground);
+
+    background:
+      var(--vscode-editorGroupHeader-tabsBackground);
+  }
+
+
+  .display-info.open {
+    display:
+      grid;
+
+    grid-template-columns:
+      max-content minmax(0, 1fr);
+
+    column-gap:
+      18px;
+
+    row-gap:
+      5px;
+  }
+
+
+  .display-info-label {
+    font-weight:
+      600;
+
+    color:
+      var(--vscode-foreground);
+  }
+
+
+  .display-info-value {
+    min-width:
+      0;
+
+    overflow-wrap:
+      anywhere;
+  }
+
+
   .spinner {
     display:
       inline-block;
@@ -7595,23 +7682,16 @@ function buildResultsHtml():
       )}
     </span>
 
-    <span>
-      NULL values are blank
-    </span>
-
-    <span>
-      NLS_DATE_FORMAT:
-      ${escapeHtml(
-        activeTab.nlsSettings.dateFormat
-      )}
-    </span>
-
-    <span>
-      NLS_TIMESTAMP_FORMAT:
-      ${escapeHtml(
-        activeTab.nlsSettings.timestampFormat
-      )}
-    </span>
+    <button
+      class="display-info-toggle"
+      id="display-info-toggle"
+      type="button"
+      onclick="toggleDisplayInfo()"
+      aria-expanded="false"
+      aria-controls="display-info"
+    >
+      Display Info ▸
+    </button>
 
     ${
       activeTab.pinned
@@ -7619,6 +7699,33 @@ function buildResultsHtml():
         : ''
     }
 
+  </div>
+
+
+  <div
+    class="display-info"
+    id="display-info"
+  >
+    <span class="display-info-label">NULL display</span>
+    <span class="display-info-value">
+      ${escapeHtml(
+        getNullDisplayText() || 'blank'
+      )}
+    </span>
+
+    <span class="display-info-label">Date format</span>
+    <span class="display-info-value">
+      ${escapeHtml(
+        activeTab.nlsSettings.dateFormat
+      )}
+    </span>
+
+    <span class="display-info-label">Timestamp format</span>
+    <span class="display-info-value">
+      ${escapeHtml(
+        activeTab.nlsSettings.timestampFormat
+      )}
+    </span>
   </div>
 
 
@@ -7664,6 +7771,70 @@ function buildResultsHtml():
 
   const autoFetchOnScroll =
     ${getAutoFetchOnScroll()};
+
+
+  const webviewState =
+    vscode.getState() ?? {};
+
+
+  let displayInfoOpen =
+    Boolean(
+      webviewState.displayInfoOpen
+    );
+
+
+  function applyDisplayInfoState() {
+
+    const panel =
+      document.getElementById(
+        'display-info'
+      );
+
+    const toggle =
+      document.getElementById(
+        'display-info-toggle'
+      );
+
+
+    if (!panel || !toggle) {
+      return;
+    }
+
+
+    panel.classList.toggle(
+      'open',
+      displayInfoOpen
+    );
+
+    toggle.textContent =
+      displayInfoOpen
+        ? 'Display Info ▾'
+        : 'Display Info ▸';
+
+    toggle.setAttribute(
+      'aria-expanded',
+      String(displayInfoOpen)
+    );
+
+  }
+
+
+  function toggleDisplayInfo() {
+
+    displayInfoOpen =
+      !displayInfoOpen;
+
+    vscode.setState({
+      ...webviewState,
+      displayInfoOpen
+    });
+
+    applyDisplayInfoState();
+
+  }
+
+
+  applyDisplayInfoState();
 
 
   function selectTab(
