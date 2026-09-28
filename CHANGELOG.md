@@ -12,6 +12,8 @@ Oracle Clean Results is currently under active development. Early releases focus
 - Added Go to Error navigation to jump directly from an error result to the exact error location in the original SQL worksheet.
 - Go to Error supports cursor-based execution, selected SQL, multiple selected statements, leading comments and whitespace, and retained error tabs.
 - Added detailed Oracle diagnostics to the Oracle Clean Results Output channel.
+- Added collapsible Display Info to keep result status information cleaner while retaining access to NULL and Oracle NLS formatting details.
+- Display Info reflects the configured NULL display text and the NLS date and timestamp formats used by the result.
 
 ## 0.1.0 — First Public Release
 
