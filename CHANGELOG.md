@@ -4,6 +4,15 @@ All notable changes to **Oracle Clean Results** are documented in this file.
 
 Oracle Clean Results is currently under active development. Early releases focus on building and refining the core query-results workflow.
 
+## 0.1.1 - Oracle Error Handling
+
+- Added rich Oracle error results with error code, message, location, cause and action.
+- Added Oracle Error Help using Oracle-provided documentation links.
+- Added View Query support to error results.
+- Added Go to Error navigation to jump directly from an error result to the exact error location in the original SQL worksheet.
+- Go to Error supports cursor-based execution, selected SQL, multiple selected statements, leading comments and whitespace, and retained error tabs.
+- Added detailed Oracle diagnostics to the Oracle Clean Results Output channel.
+
 ## 0.1.0 — First Public Release
 
 Oracle Clean Results is now ready for its first public preview release.
