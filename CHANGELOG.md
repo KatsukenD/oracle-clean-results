@@ -4,6 +4,15 @@ All notable changes to **Oracle Clean Results** are documented in this file.
 
 Oracle Clean Results is currently under active development. Early releases focus on building and refining the core query-results workflow.
 
+## 0.1.2 - Duplicate Column Handling
+
+- Fixed incorrect values when query results contain duplicate column names.
+- Clean Results now respects Oracle's disambiguated result column names, such as `DESCRIPTION` and `DESCRIPTION_1`.
+- Duplicate columns now retain their correct individual values throughout the results grid.
+- Updated filtering and sorting to correctly handle duplicate result columns.
+- Updated copy and export functionality to correctly preserve values from duplicate columns.
+- Updated automatic column width calculation to use the correct underlying result column.
+
 ## 0.1.1 - Oracle Error Handling
 
 - Added rich Oracle error results with error code, message, location, cause and action.

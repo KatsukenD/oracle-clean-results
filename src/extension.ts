@@ -84,6 +84,9 @@ interface ColumnMetadata {
   name:
     string;
 
+  rowKey:
+    string;
+
   dataType:
     string;
 
@@ -1061,43 +1064,61 @@ async function executeCleanQuery(
     const rows =
       resultSet.rows();
 
+const rowKeys =
+  rows.length > 0
+    ? Object.keys(rows[0])
+    : [];
 
-    const metadata:
-      ColumnMetadata[] =
-        resultSet.metadata()
-          .map(
-            column => ({
-              name:
-                String(
-                  column.name ??
-                  ''
-                ),
 
-              dataType:
-                String(
-                  column.dataType ??
-                  'UNKNOWN'
-                ),
+const metadata:
+  ColumnMetadata[] =
+    resultSet.metadata()
+      .map(
+        (
+          column,
+          columnIndex
+        ) => ({
 
-              precision:
-                typeof column.precision ===
-                  'number'
-                  ? column.precision
-                  : undefined,
+          name:
+            rowKeys[columnIndex] ??
+            String(
+              column.name ??
+              ''
+            ),
 
-              scale:
-                typeof column.scale ===
-                  'number'
-                  ? column.scale
-                  : undefined,
+          rowKey:
+            rowKeys[columnIndex] ??
+            String(
+              column.name ??
+              ''
+            ),
 
-              isNullable:
-                typeof column.isNullable ===
-                  'number'
-                  ? column.isNullable
-                  : undefined
-            })
-          );
+          dataType:
+            String(
+              column.dataType ??
+              'UNKNOWN'
+            ),
+
+          precision:
+            typeof column.precision ===
+            'number'
+              ? column.precision
+              : undefined,
+
+          scale:
+            typeof column.scale ===
+            'number'
+              ? column.scale
+              : undefined,
+
+          isNullable:
+            typeof column.isNullable ===
+            'number'
+              ? column.isNullable
+              : undefined
+
+        })
+      );
 
 
     const hasMore =
@@ -2836,6 +2857,22 @@ function getRowValue(
 }
 
 
+function getColumnValue(
+  row:
+    Record<string, unknown>,
+
+  column:
+    ColumnMetadata
+): unknown {
+
+  return getRowValue(
+    row,
+    column.rowKey
+  );
+
+}
+
+
 async function addQueryResult(
   rows:
     Array<Record<string, unknown>>,
@@ -3429,9 +3466,9 @@ async function sendVirtualRows(
                 column => {
 
                   const value =
-                    getRowValue(
+                    getColumnValue(
                       row,
-                      column.name
+                      column
                     );
 
 
@@ -3745,9 +3782,9 @@ function getFilterKeysForColumn(
     tab.rows.map(
       row =>
         getFilterKey(
-          getRowValue(
+          getColumnValue(
             row,
-            column.name
+            column
           )
         )
     );
@@ -3902,11 +3939,11 @@ function getDistinctFilterOptions(
       !options.has(key)
     ) {
 
-      const value =
-        getRowValue(
-          tab.rows[rowIndex],
-          column.name
-        );
+    const value =
+      getColumnValue(
+        tab.rows[rowIndex],
+        column
+      );
 
 
       options.set(
@@ -4108,15 +4145,15 @@ function getDisplayRows(
               }
 
               const leftValue =
-                getRowValue(
+                getColumnValue(
                   left.row,
-                  column.name
+                  column
                 );
 
               const rightValue =
-                getRowValue(
+                getColumnValue(
                   right.row,
-                  column.name
+                  column
                 );
 
               const comparison =
@@ -4553,7 +4590,7 @@ async function copyResultSelection(id: number, includeHeaders: boolean): Promise
     const values: string[] = [];
     for (const c of columnIndexes) {
       const column = columns[c];
-      values.push(clipboardCellText(getRowValue(rows[r], column.name), column, tab.nlsSettings));
+      values.push(clipboardCellText(getColumnValue(rows[r], column), column, tab.nlsSettings));
     }
     lines.push(values.join('\t'));
   }
@@ -4991,9 +5028,9 @@ function buildDelimitedText(
           column =>
             quoteDelimitedValue(
               exportCellText(
-                getRowValue(
+                getColumnValue(
                   row,
-                  column.name
+                  column
                 ),
                 column,
                 settings
@@ -5257,9 +5294,9 @@ async function saveExcelExport(
       data.columns.map(
         column =>
           excelCellValue(
-            getRowValue(
+            getColumnValue(
               row,
-              column.name
+              column
             ),
             column
           )
@@ -5666,9 +5703,9 @@ async function exportInsertStatementsToClipboard(
             .map(
               column =>
                 oracleInsertValue(
-                  getRowValue(
+                  getColumnValue(
                     row,
-                    column.name
+                    column
                   ),
                   column
                 )
@@ -11893,9 +11930,9 @@ function calculateColumnWidth(
     const row of rows
   ) {
     const value =
-      getRowValue(
+      getColumnValue(
         row,
-        column.name
+        column
       );
 
     const displayLength =
@@ -12019,13 +12056,16 @@ function getColumns(
         );
 
 
-        columns.push({
-          name:
-            key,
+columns.push({
+  name:
+    key,
 
-          dataType:
-            'UNKNOWN'
-        });
+  rowKey:
+    key,
+
+  dataType:
+    'UNKNOWN'
+});
 
       }
 
