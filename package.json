@@ -2,7 +2,7 @@
   "name": "oracle-clean-results",
   "displayName": "Oracle Clean Results",
   "description": "A companion results viewer for Oracle SQL Developer for VS Code with clean NULL handling, NLS-aware formatting, sorting, filtering, large result sets, exports, and query provenance.",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "repository": {
     "type": "git",
     "url": "https://github.com/KatsukenD/oracle-clean-results.git"

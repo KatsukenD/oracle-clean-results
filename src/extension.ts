@@ -3659,62 +3659,45 @@ function formatFilterLabel(
 
 
   if (
-    dataType === 'DATE'
-  ) {
-
-    if (
-      typeof value ===
-      'string'
-    ) {
-
-      return formatOracleTemporalString(
-        value,
-        nlsSettings.dateFormat
-      );
-
-    }
-
-
-    if (
-      value instanceof Date
-    ) {
-
-      return formatTemporalParts(
-        getPartsFromDate(value),
-        nlsSettings.dateFormat
-      );
-
-    }
-
-  }
-
-
-  if (
+    dataType === 'DATE' ||
     dataType.startsWith(
       'TIMESTAMP'
     )
   ) {
 
+    const temporalValue =
+      getOracleTemporalValue(
+        value
+      );
+
+    const format =
+      dataType === 'DATE'
+        ? nlsSettings.dateFormat
+        : nlsSettings.timestampFormat;
+
+
     if (
-      typeof value ===
+      typeof temporalValue ===
       'string'
     ) {
 
       return formatOracleTemporalString(
-        value,
-        nlsSettings.timestampFormat
+        temporalValue,
+        format
       );
 
     }
 
 
     if (
-      value instanceof Date
+      temporalValue instanceof Date
     ) {
 
       return formatTemporalParts(
-        getPartsFromDate(value),
-        nlsSettings.timestampFormat
+        getPartsFromDate(
+          temporalValue
+        ),
+        format
       );
 
     }
@@ -5157,14 +5140,19 @@ function excelCellValue(
     )
   ) {
 
+    const temporalValue =
+      getOracleTemporalValue(
+        value
+      );
+
     const parts =
-      typeof value === 'string'
+      typeof temporalValue === 'string'
         ? parseOracleTemporalString(
-            value
+            temporalValue
           )
-        : value instanceof Date
+        : temporalValue instanceof Date
           ? getPartsFromDate(
-              value
+              temporalValue
             )
           : undefined;
 
@@ -5484,14 +5472,19 @@ function oracleInsertValue(
   }
 
 
+  const temporalValue =
+    getOracleTemporalValue(
+      value
+    );
+
   const temporalParts =
-    typeof value === 'string'
+    typeof temporalValue === 'string'
       ? parseOracleTemporalString(
-          value
+          temporalValue
         )
-      : value instanceof Date
+      : temporalValue instanceof Date
         ? getPartsFromDate(
-            value
+            temporalValue
           )
         : undefined;
 
@@ -5893,17 +5886,23 @@ function getSortableTemporalValue(
 ): number | undefined {
 
 
+  const temporalValue =
+    getOracleTemporalValue(
+      value
+    );
+
+
   if (
-    value instanceof Date
+    temporalValue instanceof Date
   ) {
 
-    return value.getTime();
+    return temporalValue.getTime();
 
   }
 
 
   if (
-    typeof value !==
+    typeof temporalValue !==
     'string'
   ) {
 
@@ -5914,7 +5913,7 @@ function getSortableTemporalValue(
 
   const parts =
     parseOracleTemporalString(
-      value
+      temporalValue
     );
 
 
@@ -12241,6 +12240,57 @@ function formatElapsedTime(
 }
 
 
+function getOracleTemporalValue(
+  value:
+    unknown
+): string | Date | undefined {
+
+
+  if (
+    typeof value ===
+    'string' ||
+    value instanceof Date
+  ) {
+
+    return value;
+
+  }
+
+
+  if (
+    !value ||
+    typeof value !==
+      'object'
+  ) {
+
+    return undefined;
+
+  }
+
+
+  const candidate =
+    value as Record<string, unknown>;
+
+  const innerValue =
+    candidate.value;
+
+
+  if (
+    typeof innerValue ===
+    'string' ||
+    innerValue instanceof Date
+  ) {
+
+    return innerValue;
+
+  }
+
+
+  return undefined;
+
+}
+
+
 function formatCell(
   value:
     unknown,
@@ -12272,58 +12322,32 @@ function formatCell(
 
 
   if (
-    dataType ===
-    'DATE'
-  ) {
-
-    if (
-      typeof value ===
-      'string'
-    ) {
-
-      return escapeHtml(
-        formatOracleTemporalString(
-          value,
-          nlsSettings.dateFormat
-        )
-      );
-
-    }
-
-
-    if (
-      value instanceof Date
-    ) {
-
-      return escapeHtml(
-        formatTemporalParts(
-          getPartsFromDate(
-            value
-          ),
-          nlsSettings.dateFormat
-        )
-      );
-
-    }
-
-  }
-
-
-  if (
+    dataType === 'DATE' ||
     dataType.startsWith(
       'TIMESTAMP'
     )
   ) {
 
+    const temporalValue =
+      getOracleTemporalValue(
+        value
+      );
+
+    const format =
+      dataType === 'DATE'
+        ? nlsSettings.dateFormat
+        : nlsSettings.timestampFormat;
+
+
     if (
-      typeof value ===
+      typeof temporalValue ===
       'string'
     ) {
 
       return escapeHtml(
         formatOracleTemporalString(
-          value,
-          nlsSettings.timestampFormat
+          temporalValue,
+          format
         )
       );
 
@@ -12331,15 +12355,15 @@ function formatCell(
 
 
     if (
-      value instanceof Date
+      temporalValue instanceof Date
     ) {
 
       return escapeHtml(
         formatTemporalParts(
           getPartsFromDate(
-            value
+            temporalValue
           ),
-          nlsSettings.timestampFormat
+          format
         )
       );
 

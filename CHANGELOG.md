@@ -4,6 +4,15 @@ All notable changes to **Oracle Clean Results** are documented in this file.
 
 Oracle Clean Results is currently under active development. Early releases focus on building and refining the core query-results workflow.
 
+## 0.1.4 - Date and Timestamp Handling
+
+- Fixed Oracle DATE and TIMESTAMP values displaying as raw value objects after the duplicate-column handling changes in v0.1.2.
+- Added support for Oracle temporal value wrappers while preserving NLS-aware date and timestamp formatting.
+- Updated filtering and sorting to correctly handle wrapped DATE and TIMESTAMP values.
+- Updated copy and text export functionality to preserve formatted DATE and TIMESTAMP values.
+- Updated Excel exports to retain DATE and TIMESTAMP values as typed dates.
+- Updated generated INSERT statements to correctly handle wrapped DATE and TIMESTAMP values.
+
 ## 0.1.3 - Filter Popup Improvements
 
 - Fixed filter popups being partially hidden when the Results pane is short.
