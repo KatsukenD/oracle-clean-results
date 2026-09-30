@@ -7449,10 +7449,13 @@ function buildResultsHtml():
       auto;
 
     min-height:
-      80px;
+      0;
 
     max-height:
       280px;
+
+    flex:
+      1 1 auto;
 
     border-top:
       1px solid var(--vscode-menu-separatorBackground);
@@ -8308,6 +8311,87 @@ function buildResultsHtml():
   }
 
 
+  function positionFilterPopup() {
+
+    const popup =
+      document.getElementById(
+        'filter-popup'
+      );
+
+    if (
+      !popup ||
+      openFilterColumn ===
+        undefined
+    ) {
+
+      return;
+
+    }
+
+
+    const button =
+      document.querySelector(
+        '[data-filter-column="' +
+        openFilterColumn +
+        '"]'
+      );
+
+
+    if (!button) {
+
+      return;
+
+    }
+
+
+    const rect =
+      button.getBoundingClientRect();
+
+    const popupWidth =
+      300;
+
+    const margin =
+      4;
+
+    const top =
+      rect.bottom + 2;
+
+    const availableHeight =
+      Math.max(
+        0,
+        window.innerHeight -
+          top -
+          margin
+      );
+
+
+    const left =
+      Math.max(
+        margin,
+        Math.min(
+          rect.left,
+          window.innerWidth -
+            popupWidth -
+            margin
+        )
+      );
+
+
+    popup.style.left =
+      left + 'px';
+
+    popup.style.top =
+      top + 'px';
+
+    popup.style.maxHeight =
+      Math.min(
+        420,
+        availableHeight
+      ) + 'px';
+
+  }
+
+
   function showFilterPopup(
     message
   ) {
@@ -8532,30 +8616,7 @@ function buildResultsHtml():
     );
 
 
-    const rect =
-      button.getBoundingClientRect();
-
-    const popupWidth =
-      300;
-
-    const left =
-      Math.max(
-        4,
-        Math.min(
-          rect.left,
-          window.innerWidth -
-            popupWidth - 4
-        )
-      );
-
-    popup.style.left =
-      left + 'px';
-
-    popup.style.top =
-      Math.min(
-        rect.bottom + 2,
-        window.innerHeight - 430
-      ) + 'px';
+    positionFilterPopup();
 
 
     renderFilterOptions();
@@ -9367,6 +9428,23 @@ function buildResultsHtml():
       columnIndex
     });
   }
+
+
+  window.addEventListener(
+    'resize',
+    () => {
+
+      if (
+        openFilterColumn !==
+        undefined
+      ) {
+
+        positionFilterPopup();
+
+      }
+
+    }
+  );
 
 
   window.addEventListener(
