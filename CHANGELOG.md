@@ -4,6 +4,14 @@ All notable changes to **Oracle Clean Results** are documented in this file.
 
 Oracle Clean Results is currently under active development. Early releases focus on building and refining the core query-results workflow.
 
+## 0.1.3 - Filter Popup Improvements
+
+- Fixed filter popups being partially hidden when the Results pane is short.
+- Filter popups are now anchored below the relevant column header.
+- Filter popups dynamically adapt to the available Results pane height.
+- Filter value lists now scroll when there is insufficient vertical space.
+- Open filter popups automatically adjust when the Results pane is resized.
+
 ## 0.1.2 - Duplicate Column Handling
 
 - Fixed incorrect values when query results contain duplicate column names.
