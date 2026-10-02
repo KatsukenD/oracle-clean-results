@@ -298,6 +298,14 @@ const outputChannel =
     'Oracle Clean Results'
   );
 
+function diagnosticTimestamp(): string {
+  return new Date().toISOString();
+}
+
+function diagnosticElapsed(startTime: number): string {
+  return `${Date.now() - startTime} ms`;
+}
+
 class ResultsViewProvider
   implements vscode.WebviewViewProvider {
 
@@ -1010,10 +1018,26 @@ async function executeCleanQuery(
 ): Promise<void> {
 
 
+  const executionDiagnosticStart = Date.now();
+
+  outputChannel.appendLine(
+    `[${diagnosticTimestamp()}] Clean Results execution started`
+  );
+
+  const nlsDiagnosticStart = Date.now();
+
+  outputChannel.appendLine(
+    `[${diagnosticTimestamp()}] Getting NLS settings...`
+  );
+
   const nlsSettings =
     await getNlsSettings(
       session
     );
+
+  outputChannel.appendLine(
+    `[${diagnosticTimestamp()}] NLS settings returned (${diagnosticElapsed(nlsDiagnosticStart)})`
+  );
 
 
   let resultSet:
@@ -1045,6 +1069,12 @@ async function executeCleanQuery(
 
   try {
 
+    const executeQueryDiagnosticStart = Date.now();
+
+    outputChannel.appendLine(
+      `[${diagnosticTimestamp()}] Calling session.executeQuery()...`
+    );
+
     resultSet =
       await session.executeQuery(
 
@@ -1060,9 +1090,18 @@ async function executeCleanQuery(
 
       );
 
+    outputChannel.appendLine(
+      `[${diagnosticTimestamp()}] session.executeQuery() returned (${diagnosticElapsed(executeQueryDiagnosticStart)})`
+    );
+
+    const rowsDiagnosticStart = Date.now();
 
     const rows =
       resultSet.rows();
+
+    outputChannel.appendLine(
+      `[${diagnosticTimestamp()}] Initial rows returned: ${rows.length} (${diagnosticElapsed(rowsDiagnosticStart)})`
+    );
 
 const rowKeys =
   rows.length > 0
@@ -1121,13 +1160,22 @@ const metadata:
       );
 
 
+    const hasNextDiagnosticStart = Date.now();
+
     const hasMore =
       await resultSet.hasNext();
 
+    outputChannel.appendLine(
+      `[${diagnosticTimestamp()}] hasNext() returned ${hasMore} (${diagnosticElapsed(hasNextDiagnosticStart)})`
+    );
 
     const elapsedMs =
       Date.now() -
       startTime;
+
+    outputChannel.appendLine(
+      `[${diagnosticTimestamp()}] Query execution pipeline complete (${diagnosticElapsed(executionDiagnosticStart)} total)`
+    );
 
 
     if (!hasMore) {
@@ -2686,6 +2734,12 @@ async function getNlsSettings(
 
     try {
 
+      const nlsExecuteDiagnosticStart = Date.now();
+
+      outputChannel.appendLine(
+        `[${diagnosticTimestamp()}] NLS session.executeQuery() starting...`
+      );
+
       nlsResultSet =
         await session.executeQuery(
 
@@ -2706,6 +2760,10 @@ async function getNlsSettings(
             10
         }
 
+      );
+
+      outputChannel.appendLine(
+        `[${diagnosticTimestamp()}] NLS session.executeQuery() returned (${diagnosticElapsed(nlsExecuteDiagnosticStart)})`
       );
 
 
