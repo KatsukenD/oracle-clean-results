@@ -4,6 +4,13 @@ All notable changes to **Oracle Clean Results** are documented in this file.
 
 Oracle Clean Results is currently under active development. Early releases focus on building and refining the core query-results workflow.
 
+## 0.1.5 - Export Usability and Diagnostics
+
+- Added an **Open File** action to successful file export notifications.
+- Exported Excel, CSV and TSV files can now be opened directly in the system's associated application.
+- Added background query execution timing diagnostics to the Oracle Clean Results Output channel.
+- Query diagnostics capture NLS lookup, Oracle query execution, initial row retrieval and result availability timings to assist with troubleshooting execution delays.
+
 ## 0.1.4 - Date and Timestamp Handling
 
 - Fixed Oracle DATE and TIMESTAMP values displaying as raw value objects after the duplicate-column handling changes in v0.1.2.

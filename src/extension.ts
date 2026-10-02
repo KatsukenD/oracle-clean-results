@@ -5138,9 +5138,43 @@ async function saveDelimitedExport(
   );
 
 
-  void vscode.window.showInformationMessage(
-    `Oracle Clean Results: Exported ${data.rows.length} row${data.rows.length === 1 ? '' : 's'} to ${uri.fsPath}.`
+  await showExportSuccessMessage(
+    uri,
+    data.rows.length
   );
+
+}
+
+
+async function showExportSuccessMessage(
+  uri: vscode.Uri,
+  rowCount: number
+): Promise<void> {
+
+  const action =
+    await vscode.window.showInformationMessage(
+      `Oracle Clean Results: Exported ${rowCount} row${rowCount === 1 ? '' : 's'} to ${uri.fsPath}.`,
+      'Open File'
+    );
+
+  if (
+    action === 'Open File'
+  ) {
+
+    const opened =
+      await vscode.env.openExternal(
+        uri
+      );
+
+    if (!opened) {
+
+      void vscode.window.showWarningMessage(
+        `Oracle Clean Results: The exported file could not be opened automatically: ${uri.fsPath}`
+      );
+
+    }
+
+  }
 
 }
 
@@ -5470,8 +5504,9 @@ async function saveExcelExport(
   );
 
 
-  void vscode.window.showInformationMessage(
-    `Oracle Clean Results: Exported ${data.rows.length} row${data.rows.length === 1 ? '' : 's'} to ${uri.fsPath}.`
+  await showExportSuccessMessage(
+    uri,
+    data.rows.length
   );
 
 }
