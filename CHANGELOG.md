@@ -4,6 +4,18 @@ All notable changes to **Oracle Clean Results** are documented in this file.
 
 Oracle Clean Results is currently under active development. Early releases focus on building and refining the core query-results workflow.
 
+## 0.1.6 - Excel Date and Timestamp Export Fixes
+
+- Fixed an issue where Oracle DATE and TIMESTAMP values could shift by the local timezone offset when exported to Excel.
+- Excel exports now preserve the original Oracle calendar date and time without unintended timezone conversions.
+- Improved Excel DATE formatting to display both the date and time (`dd/mm/yyyy hh:mm:ss`).
+- Improved Excel TIMESTAMP formatting to display the date, time and milliseconds (`dd/mm/yyyy hh:mm:ss.000`).
+- Fixed misleading date-only displays for timestamps close to midnight.
+- Preserved native Excel date/time cell types for sorting, filtering and calculations.
+- Verified CSV, TSV, Clipboard Text and Clipboard INSERT exports retain the correct Oracle date/time values, including fractional seconds where supported.
+
+**Known limitation:** Excel date/time exports currently preserve millisecond precision; Oracle TIMESTAMP fractional seconds beyond milliseconds are not retained.
+
 ## 0.1.5 - Export Usability and Diagnostics
 
 - Added an **Open File** action to successful file export notifications.

@@ -5250,22 +5250,23 @@ function excelCellValue(
 
     if (parts) {
 
+      // Excel stores wall-clock dates without a timezone.
+      // Use UTC components so ExcelJS does not subtract
+      // the computer's local timezone offset on export.
       return new Date(
-        parts.year,
-        parts.month - 1,
-        parts.day,
-        parts.hours,
-        parts.minutes,
-        parts.seconds,
-        Number(
-          (
-            parts.fractionalSeconds +
-            '000'
+        Date.UTC(
+          parts.year,
+          parts.month - 1,
+          parts.day,
+          parts.hours,
+          parts.minutes,
+          parts.seconds,
+          Number(
+            (
+              parts.fractionalSeconds +
+              '000'
+            ).substring(0, 3)
           )
-            .substring(
-              0,
-              3
-            )
         )
       );
 
@@ -5364,6 +5365,20 @@ async function saveExcelExport(
           )
       })
     );
+
+
+  // Preserve visible date and time in Excel, including milliseconds
+  // for Oracle TIMESTAMP columns. These remain native Excel dates.
+  data.columns.forEach((column, index) => {
+    const dataType = column.dataType.toUpperCase();
+    if (dataType.startsWith('TIMESTAMP')) {
+      worksheet.getColumn(index + 1).numFmt =
+        'dd/mm/yyyy hh:mm:ss.000';
+    } else if (dataType === 'DATE') {
+      worksheet.getColumn(index + 1).numFmt =
+        'dd/mm/yyyy hh:mm:ss';
+    }
+  });
 
 
   for (
