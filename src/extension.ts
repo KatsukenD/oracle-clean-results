@@ -4684,6 +4684,43 @@ interface ExportData {
 }
 
 
+// Experiment: clear the initial keyboard-active item in the export format picker.
+// The export scope picker deliberately retains its existing behaviour.
+async function showExportQuickPick<T extends vscode.QuickPickItem>(
+  items: T[],
+  title: string,
+  placeHolder: string
+): Promise<T | undefined> {
+
+  return new Promise<T | undefined>((resolve) => {
+    const picker = vscode.window.createQuickPick<T>();
+
+    picker.title = title;
+    picker.placeholder = placeHolder;
+    picker.items = items;
+
+    let acceptedItem: T | undefined;
+
+    const acceptDisposable = picker.onDidAccept(() => {
+      acceptedItem = picker.selectedItems[0] ?? picker.activeItems[0];
+      picker.hide();
+    });
+
+    const hideDisposable = picker.onDidHide(() => {
+      acceptDisposable.dispose();
+      hideDisposable.dispose();
+      picker.dispose();
+      resolve(acceptedItem);
+    });
+
+    picker.show();
+
+    // Test whether VS Code allows the picker to start with no active item.
+    picker.activeItems = [];
+  });
+}
+
+
 async function exportResults(
   id: number
 ): Promise<void> {
@@ -4700,7 +4737,7 @@ async function exportResults(
 
 
   const formatPick =
-    await vscode.window.showQuickPick(
+    await showExportQuickPick(
       [
         {
           label: '$(file) Excel Workbook (.xlsx)',
@@ -4728,10 +4765,8 @@ async function exportResults(
           value: 'insertStatements' as ExportFormat
         }
       ],
-      {
-        title: 'Export Results',
-        placeHolder: 'Choose an export format'
-      }
+      'Export Results',
+      'Choose an export format'
     );
 
   if (!formatPick) {
@@ -4791,12 +4826,10 @@ async function exportResults(
 
 
   const scopePick =
-    await vscode.window.showQuickPick(
+    await showExportQuickPick(
       scopeItems,
-      {
-        title: 'Export Results',
-        placeHolder: 'Choose what to export'
-      }
+      'Export Results',
+      'Choose what to export'
     );
 
   if (!scopePick) {
