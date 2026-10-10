@@ -4,6 +4,19 @@ All notable changes to **Oracle Clean Results** are documented in this file.
 
 Oracle Clean Results is currently under active development. Early releases focus on building and refining the core query-results workflow.
 
+## 0.1.7 - Export Picker and Folder Improvements
+
+### Improvements
+- Improved the Export Format and Export Scope selection menus to remove the misleading initial selection highlight.
+- Added **Default Export Folder** setting for Excel, CSV and TSV exports.
+- Added **Remember Last Export Folder** setting (enabled by default), preserving the last successfully used export folder across VS Code sessions.
+- Added **Choose Default Export Folder** command, allowing users to browse for a folder directly from VS Code Settings or the Command Palette.
+- Organised extension settings into a more logical order, keeping export folder preferences together.
+
+### Behaviour
+- The remembered export folder takes precedence over the configured default folder when enabled.
+- Clipboard exports remain unaffected by export folder preferences.
+
 ## 0.1.6 - Excel Date and Timestamp Export Fixes
 
 - Fixed an issue where Oracle DATE and TIMESTAMP values could shift by the local timezone offset when exported to Excel.

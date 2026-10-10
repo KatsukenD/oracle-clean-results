@@ -15,7 +15,6 @@
   "publisher": "KatsukenD",
   "pricing": "Free",
   "preview": true,
-  "icon": "resources/icon.png",
   "keywords": [
     "oracle",
     "sql",
@@ -43,26 +42,42 @@
         "oracleCleanResults.nullDisplayText": {
           "type": "string",
           "default": "",
-          "markdownDescription": "Text used to display database NULL values in the results grid. Leave blank to display NULL values as empty cells. This affects display only."
+          "markdownDescription": "Text used to display database NULL values in the results grid. Leave blank to display NULL values as empty cells. This affects display only.",
+          "order": 1
         },
         "oracleCleanResults.fetchSize": {
           "type": "integer",
           "default": 500,
           "minimum": 1,
           "maximum": 10000,
-          "description": "Number of rows fetched from Oracle at a time. Applies to newly executed queries."
+          "description": "Number of rows fetched from Oracle at a time. Applies to newly executed queries.",
+          "order": 2
         },
         "oracleCleanResults.autoFetchOnScroll": {
           "type": "boolean",
           "default": true,
-          "description": "Automatically fetch the next page of results when scrolling near the end of the currently fetched rows."
+          "description": "Automatically fetch the next page of results when scrolling near the end of the currently fetched rows.",
+          "order": 3
         },
         "oracleCleanResults.maxAutoColumnWidth": {
           "type": "integer",
           "default": 400,
           "minimum": 64,
           "maximum": 2000,
-          "description": "Maximum automatic column width in pixels. Columns can still be manually resized beyond this value."
+          "description": "Maximum automatic column width in pixels. Columns can still be manually resized beyond this value.",
+          "order": 4
+        },
+        "oracleCleanResults.defaultExportFolder": {
+          "type": "string",
+          "default": "",
+          "order": 5,
+          "markdownDescription": "Default folder for Excel, CSV and TSV exports. Leave blank to use the normal Save dialog location. Supports absolute paths and ~/ on macOS/Linux. [Browse for a folder](command:oracleCleanResults.chooseDefaultExportFolder). Alternatively, run **Oracle Clean Results: Choose Default Export Folder** from the Command Palette."
+        },
+        "oracleCleanResults.rememberLastExportFolder": {
+          "type": "boolean",
+          "default": true,
+          "description": "Remember the folder of the last successfully saved export and open subsequent export Save dialogs there. Takes precedence over the default export folder.",
+          "order": 6
         }
       }
     },
@@ -77,6 +92,12 @@
         "command": "oracleCleanResults.copyWithHeaders",
         "title": "Copy with Headers",
         "category": "Oracle Clean Results"
+      },
+      {
+        "command": "oracleCleanResults.chooseDefaultExportFolder",
+        "title": "Choose Default Export Folder",
+        "category": "Oracle Clean Results",
+        "icon": "$(folder-open)"
       }
     ],
     "keybindings": [

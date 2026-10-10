@@ -293,6 +293,50 @@ let activeResultId:
 let nextResultNumber =
   1;
 
+const CHOOSE_EXPORT_FOLDER_COMMAND_ID =
+  'oracleCleanResults.chooseDefaultExportFolder';
+
+const LAST_EXPORT_FOLDER_KEY = 'lastExportFolder';
+let extensionContext: vscode.ExtensionContext | undefined;
+
+function getExportDefaultUri(filename: string): vscode.Uri {
+  const config = getCleanResultsConfiguration();
+  const rememberLast = config.get<boolean>('rememberLastExportFolder', true);
+  const lastFolder = rememberLast
+    ? extensionContext?.globalState.get<string>(LAST_EXPORT_FOLDER_KEY)
+    : undefined;
+  const configuredFolder = config.get<string>('defaultExportFolder', '').trim();
+  const folder = lastFolder || configuredFolder;
+
+  if (folder) {
+    // Expand a leading ~ for macOS/Linux home directories.
+    const os = require('os') as typeof import('os');
+    const path = require('path') as typeof import('path');
+    const resolvedFolder = folder === '~'
+      ? os.homedir()
+      : folder.startsWith('~/') || folder.startsWith('~\\')
+        ? path.join(os.homedir(), folder.substring(2))
+        : folder;
+    return vscode.Uri.file(path.join(resolvedFolder, filename));
+  }
+
+  return vscode.Uri.file(filename);
+}
+
+async function rememberExportFolder(uri: vscode.Uri): Promise<void> {
+  if (uri.scheme !== 'file' || !extensionContext) {
+    return;
+  }
+  if (!getCleanResultsConfiguration().get<boolean>('rememberLastExportFolder', true)) {
+    return;
+  }
+  const path = require('path') as typeof import('path');
+  await extensionContext.globalState.update(
+    LAST_EXPORT_FOLDER_KEY,
+    path.dirname(uri.fsPath)
+  );
+}
+
 const outputChannel =
   vscode.window.createOutputChannel(
     'Oracle Clean Results'
@@ -587,6 +631,48 @@ export async function activate(
     vscode.ExtensionContext
 ): Promise<void> {
 
+
+  extensionContext = context;
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      CHOOSE_EXPORT_FOLDER_COMMAND_ID,
+      async () => {
+        const config = getCleanResultsConfiguration();
+        const configuredFolder = config.get<string>('defaultExportFolder', '').trim();
+        const path = require('path') as typeof import('path');
+        const os = require('os') as typeof import('os');
+        const resolvedFolder = configuredFolder === '~'
+          ? os.homedir()
+          : configuredFolder.startsWith('~/') || configuredFolder.startsWith('~\\')
+            ? path.join(os.homedir(), configuredFolder.substring(2))
+            : configuredFolder;
+
+        const selected = await vscode.window.showOpenDialog({
+          title: 'Choose Default Export Folder',
+          canSelectFiles: false,
+          canSelectFolders: true,
+          canSelectMany: false,
+          openLabel: 'Use This Folder',
+          ...(resolvedFolder ? { defaultUri: vscode.Uri.file(resolvedFolder) } : {})
+        });
+
+        if (!selected?.[0]) {
+          return;
+        }
+
+        await config.update(
+          'defaultExportFolder',
+          selected[0].fsPath,
+          vscode.ConfigurationTarget.Global
+        );
+
+        void vscode.window.showInformationMessage(
+          `Oracle Clean Results: Default export folder set to ${selected[0].fsPath}`
+        );
+      }
+    )
+  );
 
   const provider =
     new ResultsViewProvider();
@@ -4684,8 +4770,7 @@ interface ExportData {
 }
 
 
-// Experiment: clear the initial keyboard-active item in the export format picker.
-// The export scope picker deliberately retains its existing behaviour.
+// Keep mouse hover and keyboard focus visually clear in both export pickers.
 async function showExportQuickPick<T extends vscode.QuickPickItem>(
   items: T[],
   title: string,
@@ -4715,7 +4800,7 @@ async function showExportQuickPick<T extends vscode.QuickPickItem>(
 
     picker.show();
 
-    // Test whether VS Code allows the picker to start with no active item.
+    // Do not pre-highlight the first option.
     picker.activeItems = [];
   });
 }
@@ -5137,9 +5222,7 @@ async function saveDelimitedExport(
       title:
         `Export Results as ${extension.toUpperCase()}`,
       defaultUri:
-        vscode.Uri.file(
-          `oracle-results-${tab.id}.${extension}`
-        ),
+        getExportDefaultUri(`oracle-results-${tab.id}.${extension}`),
       filters:
         extension === 'csv'
           ? {
@@ -5170,6 +5253,8 @@ async function saveDelimitedExport(
     )
   );
 
+
+  await rememberExportFolder(uri);
 
   await showExportSuccessMessage(
     uri,
@@ -5341,9 +5426,7 @@ async function saveExcelExport(
       title:
         'Export Results as Excel Workbook',
       defaultUri:
-        vscode.Uri.file(
-          `oracle-results-${tab.id}.xlsx`
-        ),
+        getExportDefaultUri(`oracle-results-${tab.id}.xlsx`),
       filters: {
         'Excel Workbook': ['xlsx']
       }
@@ -5551,6 +5634,8 @@ async function saveExcelExport(
     )
   );
 
+
+  await rememberExportFolder(uri);
 
   await showExportSuccessMessage(
     uri,
